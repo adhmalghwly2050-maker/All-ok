@@ -361,14 +361,12 @@ export function generateAutoDrawings(
   autoTable(doc, {
     startY: 170,
     margin: { left: 230 },
-    head: [['Slab', 'Lx', 'Ly', 'h', 'Short Dir', 'Long Dir']],
+    head: [['Slab ID', 'Slab Thickness', 'Long Dir Rebar', 'Short Dir Rebar']],
     body: slabDesigns.map(s => [
       s.id,
-      `${s.design.lx.toFixed(1)}m`,
-      `${s.design.ly.toFixed(1)}m`,
-      `${s.design.hUsed}mm`,
-      `${s.design.shortDir.bars}Φ${s.design.shortDir.dia}@${s.design.shortDir.spacing}`,
+      `${s.design.hUsed} mm`,
       `${s.design.longDir.bars}Φ${s.design.longDir.dia}@${s.design.longDir.spacing}`,
+      `${s.design.shortDir.bars}Φ${s.design.shortDir.dia}@${s.design.shortDir.spacing}`,
     ]),
     styles: { fontSize: 6 },
     headStyles: { fillColor: [41, 65, 94] },

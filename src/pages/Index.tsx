@@ -5965,21 +5965,17 @@ const Index = () => {
                   <CardContent className="overflow-x-auto">
                     <Table>
                       <TableHeader><TableRow>
-                        {['الدور','البلاطة','Lx','Ly','h','Wu','تسليح قصير','تسليح طويل'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
+                        {['اسم البلاطة', 'سماكة البلاطة', 'التسليح في الاتجاه الطويل', 'التسليح في الاتجاه القصير'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                       </TableRow></TableHeader>
                       <TableBody>
                         {stories.map(story =>
                           (isAllStories || story.id === selectedStoryId) &&
                           slabDesigns.map(s => (
                             <TableRow key={`${story.id}-${s.id}`} className="cursor-pointer" onClick={() => handleSelectElement('slab', s.id)}>
-                              <TableCell className="text-xs font-medium text-muted-foreground">{story.label}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.id}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.lx.toFixed(1)}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.ly.toFixed(1)}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.hUsed}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.Wu.toFixed(2)}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.shortDir.bars}Φ{s.design.shortDir.dia}</TableCell>
+                              <TableCell className="font-mono text-xs">{isAllStories ? `${story.label} - ${s.id}` : s.id}</TableCell>
+                              <TableCell className="font-mono text-xs">{s.design.hUsed} mm</TableCell>
                               <TableCell className="font-mono text-xs">{s.design.longDir.bars}Φ{s.design.longDir.dia}</TableCell>
+                              <TableCell className="font-mono text-xs">{s.design.shortDir.bars}Φ{s.design.shortDir.dia}</TableCell>
                             </TableRow>
                           ))
                         )}

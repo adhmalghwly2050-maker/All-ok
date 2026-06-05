@@ -756,20 +756,14 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): st
   const slabById = new Map(slabs.map(s => [s.id, s]));
   let rows = '';
   for (const s of slabDesigns) {
-    const geom = slabById.get(s.id);
-    const xIsShort = geom
-      ? Math.abs(geom.x2 - geom.x1) <= Math.abs(geom.y2 - geom.y1)
-      : true;
-    const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
-    const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
-    const beta = s.design.ly > 0 ? s.design.ly / Math.max(s.design.lx, 0.01) : 0;
+    const longDir = s.design.longDir;
+    const shortDir = s.design.shortDir;
 
     rows += `<tr>
       <td style="background:#f5fff5; font-weight:bold; color:#004000; text-align:center;">${s.id}</td>
       <td style="text-align:center;">${s.design.hUsed} mm</td>
-      <td style="text-align:center; color:#1a3a5c;">${xDir.bars}Φ${xDir.dia}@${xDir.spacing}</td>
-      <td style="text-align:center; color:#7b1a00;">${yDir.bars}Φ${yDir.dia}@${yDir.spacing}</td>
-      <td style="text-align:center; font-size:8px; color:#555;">${beta.toFixed(1)} — ${s.design.isOneWay ? 'أحادي' : 'ثنائي'}</td>
+      <td style="text-align:center; color:#1a3a5c;">${longDir.bars}Φ${longDir.dia}@${longDir.spacing}</td>
+      <td style="text-align:center; color:#7b1a00;">${shortDir.bars}Φ${shortDir.dia}@${shortDir.spacing}</td>
     </tr>`;
   }
 
@@ -779,16 +773,15 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): st
     <thead>
       <tr>
         <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">اسم البلاطة</th>
-        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">السماكة</th>
-        <th style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px 4px;">حديد التسليح<br>اتجاه X</th>
-        <th style="border:1px solid #000; background:#7b1a00; color:#fff; padding:3px 4px;">حديد التسليح<br>اتجاه Y</th>
-        <th style="border:1px solid #000; background:#333; color:#fff; padding:3px 4px;">β / النوع</th>
+        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">سماكة البلاطة</th>
+        <th style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px 4px;">التسليح في الاتجاه الطويل</th>
+        <th style="border:1px solid #000; background:#7b1a00; color:#fff; padding:3px 4px;">التسليح في الاتجاه القصير</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div style="font-size:7.5px; color:#1a3a5c; margin-top:3px;">
-    X: الاتجاه الأفقي (→) &nbsp;|&nbsp; Y: الاتجاه الرأسي (↑) &nbsp;|&nbsp; القيم: عدد الأسياخ Φ القطر @ الفاصل (mm)
+    القيم: عدد الأسياخ Φ القطر @ الفاصل (mm)
   </div>`;
 }
 
