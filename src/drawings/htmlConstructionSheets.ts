@@ -631,13 +631,13 @@ function htmlColumnScheduleTable(colDesigns: ColDesignData[]): string {
   <div style="font-size:7px; color:#5c1a00; margin-top:2px;">رمز: مجموعة أعمدة ذات تسليح متطابق — الأعمدة: أرقام الأعمدة في المجموعة</div>`;
 }
 
-/** تحويل مساحة As (mm²/m) إلى تنسيق عدد الأسياخ للمتر مثل 5@Φ10/م — الحد الأدنى 5 أسياخ/م */
+/** تحويل مساحة As (mm²/m) إلى تنسيق عدد الأسياخ للمتر مثل 5Φ10/m — الحد الأدنى 5 أسياخ/م */
 function fmtAs(As: number, dia: number): string {
   const abar = Math.PI / 4 * dia * dia;
   const spacingRaw = abar / Math.max(As, 1) * 1000;
   const spacing = Math.max(100, Math.min(200, Math.round(spacingRaw / 25) * 25));
   const nPerM = Math.max(5, Math.round(1000 / spacing));
-  return `${nPerM}@Φ${dia}/م`;
+  return `${nPerM}Φ${dia}/m`;
 }
 
 /** حساب التسليح السالب الصافي — يُخصم تسليح العزم الموجب من البحرتين المجاورتين */
@@ -759,11 +759,25 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): st
     const longDir = s.design.longDir;
     const shortDir = s.design.shortDir;
 
+    const slab = slabById.get(s.id);
+    let longLabel = 'اتجاه y';
+    let shortLabel = 'اتجاه x';
+    if (slab) {
+      const dx = Math.abs(slab.x2 - slab.x1);
+      const dy = Math.abs(slab.y2 - slab.y1);
+      const xIsShort = dx <= dy;
+      longLabel = xIsShort ? 'اتجاه y' : 'اتجاه x';
+      shortLabel = xIsShort ? 'اتجاه x' : 'اتجاه y';
+    }
+
+    const formattedLong = `${longLabel} ${longDir.bars}Φ${longDir.dia}/m`;
+    const formattedShort = `${shortLabel} ${shortDir.bars}Φ${shortDir.dia}/m`;
+
     rows += `<tr>
       <td style="background:#f5fff5; font-weight:bold; color:#004000; text-align:center;">${s.id}</td>
       <td style="text-align:center;">${s.design.hUsed} mm</td>
-      <td style="text-align:center; color:#1a3a5c;">${longDir.bars}Φ${longDir.dia}@${longDir.spacing}</td>
-      <td style="text-align:center; color:#7b1a00;">${shortDir.bars}Φ${shortDir.dia}@${shortDir.spacing}</td>
+      <td style="text-align:center; color:#1a3a5c;">${formattedLong}</td>
+      <td style="text-align:center; color:#7b1a00;">${formattedShort}</td>
     </tr>`;
   }
 
@@ -781,7 +795,7 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): st
     <tbody>${rows}</tbody>
   </table>
   <div style="font-size:7.5px; color:#1a3a5c; margin-top:3px;">
-    القيم: عدد الأسياخ Φ القطر @ الفاصل (mm)
+    القيم: تسليح المتر الطولي للبلاطة (مثال: اتجاه x 5Φ10/m)
   </div>`;
 }
 

@@ -1237,12 +1237,24 @@ export function generateConstructionSheets(
     margin: { left: TABLE_ZONE.x },
     tableWidth: TABLE_WIDTH,
     head: [['Slab ID', 'Slab Thickness', 'Long Dir Rebar', 'Short Dir Rebar']],
-    body: slabDesigns.map(s => [
-      s.id,
-      `${s.design.hUsed} mm`,
-      `${s.design.longDir.bars}Φ${s.design.longDir.dia}@${s.design.longDir.spacing}`,
-      `${s.design.shortDir.bars}Φ${s.design.shortDir.dia}@${s.design.shortDir.spacing}`,
-    ]),
+    body: slabDesigns.map(s => {
+      const slab = slabs.find(sl => sl.id === s.id);
+      let shortLabel = 'X-dir';
+      let longLabel = 'Y-dir';
+      if (slab) {
+        const dx = Math.abs(slab.x2 - slab.x1);
+        const dy = Math.abs(slab.y2 - slab.y1);
+        const xIsShort = dx <= dy;
+        shortLabel = xIsShort ? 'X-dir' : 'Y-dir';
+        longLabel = xIsShort ? 'Y-dir' : 'X-dir';
+      }
+      return [
+        s.id,
+        `${s.design.hUsed} mm`,
+        `${longLabel} ${s.design.longDir.bars}Φ${s.design.longDir.dia}/m`,
+        `${shortLabel} ${s.design.shortDir.bars}Φ${s.design.shortDir.dia}/m`,
+      ];
+    }),
     styles: { fontSize: 7, cellPadding: 2 },
     headStyles: { fillColor: [0, 0, 0], fontSize: 7 },
   });

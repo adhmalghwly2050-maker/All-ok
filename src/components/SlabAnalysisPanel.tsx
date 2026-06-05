@@ -252,29 +252,53 @@ export default function SlabAnalysisPanel({ slabs, slabProps, mat }: SlabAnalysi
 
                   {/* جدول التسليح */}
                   <div className="overflow-x-auto">
-                    <p className="text-xs font-semibold mb-1">التسليح المطلوب (mm²/m):</p>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead className="text-[10px] w-16">البلاطة</TableHead>
-                          <TableHead className="text-[10px] text-center">As⁻ يسار</TableHead>
-                          <TableHead className="text-[10px] text-center">As⁺</TableHead>
-                          <TableHead className="text-[10px] text-center">As⁻ يمين</TableHead>
-                          <TableHead className="text-[10px] text-center">As,min</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {activeResult.spans.map((sp, i) => (
-                          <TableRow key={i}>
-                            <TableCell className="text-[10px] font-mono">{sp.slabId}</TableCell>
-                            <TableCell className="text-[10px] text-center font-mono">{sp.As_neg_left.toFixed(0)}</TableCell>
-                            <TableCell className="text-[10px] text-center font-mono">{sp.As_pos.toFixed(0)}</TableCell>
-                            <TableCell className="text-[10px] text-center font-mono">{sp.As_neg_right.toFixed(0)}</TableCell>
-                            <TableCell className="text-[10px] text-center font-mono text-muted-foreground">{sp.As_min.toFixed(0)}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                    <p className="text-xs font-semibold mb-1">تسليح شرائح البلاطة المقترح والحد الأدنى (مبني على Φ{slabProps.phiSlab || 12} مم):</p>
+                    {(() => {
+                      const dia = slabProps.phiSlab || 12;
+                      const formatRebar = (As: number) => {
+                        const abar = (Math.PI / 4) * dia * dia;
+                        const spacingRaw = (abar / Math.max(As, 1)) * 1000;
+                        const spacing = Math.max(100, Math.min(200, Math.round(spacingRaw / 25) * 25));
+                        const nPerM = Math.max(5, Math.round(1000 / spacing));
+                        return `${nPerM}Φ${dia}/m`;
+                      };
+                      return (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead className="text-[10px] w-16">البلاطة</TableHead>
+                              <TableHead className="text-[10px] text-center">التسليح يسار As⁻</TableHead>
+                              <TableHead className="text-[10px] text-center">التسليح وسط As⁺</TableHead>
+                              <TableHead className="text-[10px] text-center">التسليح يمين As⁻</TableHead>
+                              <TableHead className="text-[10px] text-center">الحد الأدنى As,min</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {activeResult.spans.map((sp, i) => (
+                              <TableRow key={i}>
+                                <TableCell className="text-[10px] font-mono font-semibold">{sp.slabId}</TableCell>
+                                <TableCell className="text-[10px] text-center font-mono">
+                                  <div className="font-bold text-red-600">{formatRebar(sp.As_neg_left)}</div>
+                                  <div className="text-[9px] text-muted-foreground">({sp.As_neg_left.toFixed(0)} mm²/m)</div>
+                                </TableCell>
+                                <TableCell className="text-[10px] text-center font-mono">
+                                  <div className="font-bold text-blue-600">{formatRebar(sp.As_pos)}</div>
+                                  <div className="text-[9px] text-muted-foreground">({sp.As_pos.toFixed(0)} mm²/m)</div>
+                                </TableCell>
+                                <TableCell className="text-[10px] text-center font-mono">
+                                  <div className="font-bold text-red-600">{formatRebar(sp.As_neg_right)}</div>
+                                  <div className="text-[9px] text-muted-foreground">({sp.As_neg_right.toFixed(0)} mm²/m)</div>
+                                </TableCell>
+                                <TableCell className="text-[10px] text-center font-mono">
+                                  <div className="font-bold text-muted-foreground">{formatRebar(sp.As_min)}</div>
+                                  <div className="text-[9px] text-muted-foreground">({sp.As_min.toFixed(0)} mm²/m)</div>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      );
+                    })()}
                   </div>
                 </CardContent>
               </Card>

@@ -237,7 +237,7 @@ const Index = () => {
   const {
     stories, selectedStoryId,
     slabs, mat, slabProps, beamB, beamH, colB, colH, colL, colLBelow, colTopEndCondition, colBottomEndCondition,
-    analyzed, frameResults, bobConnections, selectedEngine, ignoreSlab, beamStiffnessFactor, colStiffnessFactor,
+    analyzed, frameResults: rawFrameResults, bobConnections, selectedEngine, ignoreSlab, beamStiffnessFactor, colStiffnessFactor,
     activeTab, mode, activeTool, pendingNode,
     selectedNodeId, selectedFrameId, selectedAreaId,
     removedColumnIds, removedBeamIds, beamOverrides, colOverrides, slabPropsOverrides, extraBeams, extraColumns, etabsImportMode, etabsAnalysisData, titleBlockConfig, supportRestraints, frameEndReleases, transientFrameEndReleases,
@@ -726,6 +726,15 @@ const Index = () => {
     return snapBeamsToEccentricColumns(beamsWithLoadValues, columns);
   }, [beams, slabs, slabProps, mat, beamOverrides, removedBeamIds, columns]);
 
+  const frameResults = useMemo(() => {
+    return postprocessFrameResultsForColumnFaces(
+      rawFrameResults,
+      columns,
+      beamsWithLoads,
+      effectiveFrameEndReleases
+    );
+  }, [rawFrameResults, columns, beamsWithLoads, effectiveFrameEndReleases]);
+
   const getBeamDisplayName = useCallback((beamId: string, mergedCarrierIds?: string[] | null) => {
     if (mergedCarrierIds && mergedCarrierIds.length >= 2) {
       const parts = mergedCarrierIds.map(id => beamsWithLoads.find(b => b.id === id)).filter(Boolean);
@@ -970,6 +979,71 @@ const Index = () => {
   }, [releaseEditorData]);
 
   const beamDesigns = useMemo(() => {
+    // Helper to calculate the support half-width (mm) along the longitudinal direction of a beam
+    const getSupportHalfWidth = (
+      beam: Beam,
+      isEndTo: boolean
+    ): number => {
+      const x = isEndTo ? beam.x2 : beam.x1;
+      const y = isEndTo ? beam.y2 : beam.y1;
+      const colId = isEndTo ? beam.toCol : beam.fromCol;
+
+      // 1. Try column support by ID or proximity
+      let col = columns.find(
+        c => !c.isRemoved && (c.id === colId || (Math.abs(c.x - x) < 0.05 && Math.abs(c.y - y) < 0.05))
+      );
+
+      // 2. Try column physical footprint overlap for non-concentric beams
+      if (!col) {
+        col = columns.find((column) => {
+          if (column.isRemoved) return false;
+          const θ = ((column.orientAngle ?? 0) * Math.PI) / 180;
+          const bHalf = column.b / 2000;
+          const hHalf = column.h / 2000;
+          const xHalf = Math.abs(bHalf * Math.cos(θ)) + Math.abs(hHalf * Math.sin(θ));
+          const yHalf = Math.abs(bHalf * Math.sin(θ)) + Math.abs(hHalf * Math.cos(θ));
+
+          const dx = Math.abs(column.x - x);
+          const dy = Math.abs(column.y - y);
+          return dx <= xHalf + 0.15 && dy <= yHalf + 0.15;
+        });
+      }
+
+      if (col) {
+        const theta = ((col.orientAngle ?? 0) * Math.PI) / 180;
+        const bH = col.b / 2;
+        const hH = col.h / 2;
+        const isHoriz = beam.direction === 'horizontal';
+        return isHoriz
+          ? Math.abs(bH * Math.cos(theta)) + Math.abs(hH * Math.sin(theta))
+          : Math.abs(bH * Math.sin(theta)) + Math.abs(hH * Math.cos(theta));
+      }
+
+      // 2. Try beam support (BOB connection)
+      const crossingBeam = beamsWithLoads.find(ob => {
+        if (ob.id === beam.id) return false;
+        if (ob.direction === beam.direction) return false;
+
+        if (ob.direction === 'horizontal') {
+          const xMin = Math.min(ob.x1, ob.x2) - 0.1;
+          const xMax = Math.max(ob.x1, ob.x2) + 0.1;
+          const yMatch = Math.abs(ob.y1 - y) < 0.1;
+          return yMatch && (x >= xMin && x <= xMax);
+        } else {
+          const yMin = Math.min(ob.y1, ob.y2) - 0.1;
+          const yMax = Math.max(ob.y1, ob.y2) + 0.1;
+          const xMatch = Math.abs(ob.x1 - x) < 0.1;
+          return xMatch && (y >= yMin && y <= yMax);
+        }
+      });
+
+      if (crossingBeam) {
+        return crossingBeam.b / 2;
+      }
+
+      return 0;
+    };
+
     // ── مسار ETABS: تصميم من نتائج ETABS المستوردة ──
     if (designSource === 'etabs' && etabsAnalysisData.length > 0) {
       const designs: {
@@ -1031,9 +1105,14 @@ const Index = () => {
           effectiveFlangeWidth = Math.min(span * 1000 / 4, effectiveBeam.b + 16 * slabProps.thickness, widths.reduce((a, b) => a + b, 0) * 1000);
         }
 
-        const flexLeft  = designFlexure(ed.Mleft,  effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
+        const c_left = getSupportHalfWidth(effectiveBeam as Beam, false);
+        const c_right = getSupportHalfWidth(effectiveBeam as Beam, true);
+        const reducedMleft = Math.max(0, Math.abs(ed.Mleft) - Math.abs(ed.Vu) * (c_left / 1000));
+        const reducedMright = Math.max(0, Math.abs(ed.Mright) - Math.abs(ed.Vu) * (c_right / 1000));
+
+        const flexLeft  = designFlexure(reducedMleft,  effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
         const flexMid   = designFlexure(ed.Mmid,   effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy, 40, hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
-        const flexRight = designFlexure(ed.Mright, effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
+        const flexRight = designFlexure(reducedMright, effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fy);
         const wuBeam = 1.2 * (effectiveBeam.deadLoad || 0) + 1.6 * (effectiveBeam.liveLoad || 0);
         const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
         const shear = designShear(ed.Vu, effectiveBeam.b, effectiveBeam.h, mat.fc, mat.fyt, 40, mat.stirrupDia || 10, wuBeam, 300, AsForShear);
@@ -1041,7 +1120,7 @@ const Index = () => {
 
         designs.push({
           beamId: ed.beamId, frameId: '', span,
-          Mleft: ed.Mleft, Mmid: ed.Mmid, Mright: ed.Mright, Vu: ed.Vu,
+          Mleft: ed.Mleft < 0 ? -reducedMleft : reducedMleft, Mmid: ed.Mmid, Mright: ed.Mright < 0 ? -reducedMright : reducedMright, Vu: ed.Vu,
           Rleft: 0, Rright: 0,
           flexLeft, flexMid, flexRight, shear, deflection,
         });
@@ -1123,10 +1202,15 @@ const Index = () => {
         );
       }
 
-      const flexLeft = designFlexure(envMleft, designBeam.b, designBeam.h, mat.fc, mat.fy);
+      const c_left = getSupportHalfWidth(beamA, false);
+      const c_right = getSupportHalfWidth(beamB, true);
+      const reducedMleft = Math.max(0, envMleft - Math.abs(primaryResult.Rleft || 0) * (c_left / 1000));
+      const reducedMright = Math.max(0, envMright - Math.abs(contResult.Rright || 0) * (c_right / 1000));
+
+      const flexLeft = designFlexure(reducedMleft, designBeam.b, designBeam.h, mat.fc, mat.fy);
       const flexMid = designFlexure(envMmid, designBeam.b, designBeam.h, mat.fc, mat.fy, 40,
         hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
-      const flexRight = designFlexure(envMright, designBeam.b, designBeam.h, mat.fc, mat.fy);
+      const flexRight = designFlexure(reducedMright, designBeam.b, designBeam.h, mat.fc, mat.fy);
       const wuBeam = 1.2 * designBeam.deadLoad + 1.6 * designBeam.liveLoad;
       const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
       const shear = designShear(envVu, designBeam.b, designBeam.h, mat.fc, mat.fyt, 40, mat.stirrupDia || 10, wuBeam, 300, AsForShear);
@@ -1136,7 +1220,7 @@ const Index = () => {
       // Push ONE merged design entry for the primary beam ID
       designs.push({
         beamId: primaryId, frameId: primaryFrame.frameId, span: totalSpan,
-        Mleft: primaryResult.Mleft, Mmid: envMmid, Mright: contResult.Mright,
+        Mleft: primaryResult.Mleft < 0 ? -reducedMleft : reducedMleft, Mmid: envMmid, Mright: contResult.Mright < 0 ? -reducedMright : reducedMright,
         Vu: envVu,
         Rleft: primaryResult.Rleft || 0, Rright: contResult.Rright || 0,
         flexLeft, flexMid, flexRight, shear, deflection,
@@ -1196,10 +1280,15 @@ const Index = () => {
           );
         }
 
-        const flexLeft = designFlexure(Math.abs(br.Mleft), beam.b, beam.h, mat.fc, mat.fy);
+        const c_left = getSupportHalfWidth(beam, false);
+        const c_right = getSupportHalfWidth(beam, true);
+        const reducedMleft = Math.max(0, Math.abs(br.Mleft) - Math.abs(br.Rleft || 0) * (c_left / 1000));
+        const reducedMright = Math.max(0, Math.abs(br.Mright) - Math.abs(br.Rright || 0) * (c_right / 1000));
+
+        const flexLeft = designFlexure(reducedMleft, beam.b, beam.h, mat.fc, mat.fy);
         const flexMid = designFlexure(br.Mmid, beam.b, beam.h, mat.fc, mat.fy, 40,
           hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
-        const flexRight = designFlexure(Math.abs(br.Mright), beam.b, beam.h, mat.fc, mat.fy);
+        const flexRight = designFlexure(reducedMright, beam.b, beam.h, mat.fc, mat.fy);
         const wuBeam = 1.2 * beam.deadLoad + 1.6 * beam.liveLoad;
         const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
         const shear = designShear(br.Vu, beam.b, beam.h, mat.fc, mat.fyt, 40, mat.stirrupDia || 10, wuBeam, 300, AsForShear);
@@ -1212,7 +1301,7 @@ const Index = () => {
         const deflection = calculateDeflection(br.span, beam.b, beam.h, mat.fc, beam.deadLoad, beam.liveLoad, flexMid.As, endCondition, 'B', AsPrimeForDefl, 1.0, 60);
         designs.push({
           beamId: br.beamId, frameId: fr.frameId, span: br.span,
-          Mleft: br.Mleft, Mmid: br.Mmid, Mright: br.Mright, Vu: br.Vu,
+          Mleft: br.Mleft < 0 ? -reducedMleft : reducedMleft, Mmid: br.Mmid, Mright: br.Mright < 0 ? -reducedMright : reducedMright, Vu: br.Vu,
           Rleft: br.Rleft || 0, Rright: br.Rright || 0,
           flexLeft, flexMid, flexRight, shear, deflection,
         });
@@ -1283,10 +1372,15 @@ const Index = () => {
         );
       }
 
-      const flexLeft  = designFlexure(Mleft,  refBeam.b, refBeam.h, mat.fc, mat.fy);
+      const c_left = getSupportHalfWidth(leftPart.beam, false);
+      const c_right = getSupportHalfWidth(rightPart.beam, true);
+      const reducedMleft = Math.max(0, Mleft - Math.abs(leftPart.br.Rleft || 0) * (c_left / 1000));
+      const reducedMright = Math.max(0, Mright - Math.abs(rightPart.br.Rright || 0) * (c_right / 1000));
+
+      const flexLeft  = designFlexure(reducedMleft,  refBeam.b, refBeam.h, mat.fc, mat.fy);
       const flexMid   = designFlexure(Mmid,   refBeam.b, refBeam.h, mat.fc, mat.fy, 40,
         hasSlabs, slabProps.thickness, effectiveFlangeWidth, 4);
-      const flexRight = designFlexure(Mright, refBeam.b, refBeam.h, mat.fc, mat.fy);
+      const flexRight = designFlexure(reducedMright, refBeam.b, refBeam.h, mat.fc, mat.fy);
       const wuBeam = 1.2 * refBeam.deadLoad + 1.6 * refBeam.liveLoad;
       const AsForShear = Math.max(flexLeft.As, flexMid.As, flexRight.As);
       const shear = designShear(Vu, refBeam.b, refBeam.h, mat.fc, mat.fyt, 40,
@@ -1299,9 +1393,9 @@ const Index = () => {
         beamId: baseId,
         frameId: leftPart.frameId,
         span: totalSpan,
-        Mleft: -Mleft,
+        Mleft: -reducedMleft,
         Mmid,
-        Mright: -Mright,
+        Mright: -reducedMright,
         Vu,
         Rleft:  leftPart.br.Rleft  ?? 0,
         Rright: rightPart.br.Rright ?? 0,
@@ -1311,7 +1405,7 @@ const Index = () => {
     }
 
     return designs;
-  }, [frameResults, beamsWithLoads, mat, analyzed, bobConnections, slabs, slabProps, designSource, designExecuted, etabsAnalysisData]);
+  }, [frameResults, beamsWithLoads, columns, mat, analyzed, bobConnections, slabs, slabProps, designSource, designExecuted, etabsAnalysisData]);
 
   // Map of canonical beamId → merged part IDs (for split beams like 67 → [67-1, 67-2, 67-3])
   const splitBeamGroups = useMemo<Record<string, string[]>>(() => {
@@ -1396,12 +1490,15 @@ const Index = () => {
       else if (hasHingeJ) beamHinges2D.set(beam.id, 'J');
     }
     // Use beam-on-beam analysis when applicable (same as runAnalysis)
+    let raw: FrameResult[] = [];
     if (removedColumnIds.length > 0 && detectedConnections.length > 0) {
       const result = analyzeWithBeamOnBeam(frames, bMap, columns, mat, removedColumnIds, detectedConnections, 10, 0.01, beamHinges2D, beamStiffnessFactor, colStiffnessFactor);
-      return result.frameResults;
+      raw = result.frameResults;
+    } else {
+      raw = frames.map(f => analyzeFrame(f, bMap, columns, mat, removedColumnIds, undefined, beamHinges2D, undefined, beamStiffnessFactor, colStiffnessFactor));
     }
-    return frames.map(f => analyzeFrame(f, bMap, columns, mat, removedColumnIds, undefined, beamHinges2D, undefined, beamStiffnessFactor, colStiffnessFactor));
-  }, [analyzed, frames, beamsWithLoads, columns, mat, getBeamReleaseState, removedColumnIds, detectedConnections, beamStiffnessFactor, colStiffnessFactor]);
+    return postprocessFrameResultsForColumnFaces(raw, columns, beamsWithLoads, effectiveFrameEndReleases);
+  }, [analyzed, frames, beamsWithLoads, columns, mat, getBeamReleaseState, removedColumnIds, detectedConnections, beamStiffnessFactor, colStiffnessFactor, effectiveFrameEndReleases]);
 
   // Beam hinge map for diagram rendering
   const beamHingesMap = useMemo(() => {
@@ -5970,14 +6067,26 @@ const Index = () => {
                       <TableBody>
                         {stories.map(story =>
                           (isAllStories || story.id === selectedStoryId) &&
-                          slabDesigns.map(s => (
-                            <TableRow key={`${story.id}-${s.id}`} className="cursor-pointer" onClick={() => handleSelectElement('slab', s.id)}>
-                              <TableCell className="font-mono text-xs">{isAllStories ? `${story.label} - ${s.id}` : s.id}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.hUsed} mm</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.longDir.bars}Φ{s.design.longDir.dia}</TableCell>
-                              <TableCell className="font-mono text-xs">{s.design.shortDir.bars}Φ{s.design.shortDir.dia}</TableCell>
-                            </TableRow>
-                          ))
+                          slabDesigns.map(s => {
+                            const slab = slabs.find(sl => sl.id === s.id);
+                            let longLabel = 'اتجاه y';
+                            let shortLabel = 'اتجاه x';
+                            if (slab) {
+                              const dx = Math.abs(slab.x2 - slab.x1);
+                              const dy = Math.abs(slab.y2 - slab.y1);
+                              const xIsShort = dx <= dy;
+                              longLabel = xIsShort ? 'اتجاه y' : 'اتجاه x';
+                              shortLabel = xIsShort ? 'اتجاه x' : 'اتجاه y';
+                            }
+                            return (
+                              <TableRow key={`${story.id}-${s.id}`} className="cursor-pointer" onClick={() => handleSelectElement('slab', s.id)}>
+                                <TableCell className="font-mono text-xs">{isAllStories ? `${story.label} - ${s.id}` : s.id}</TableCell>
+                                <TableCell className="font-mono text-xs">{s.design.hUsed} mm</TableCell>
+                                <TableCell className="font-mono text-xs">{longLabel} {s.design.longDir.bars}Φ{s.design.longDir.dia}/m</TableCell>
+                                <TableCell className="font-mono text-xs">{shortLabel} {s.design.shortDir.bars}Φ{s.design.shortDir.dia}/m</TableCell>
+                              </TableRow>
+                            );
+                          })
                         )}
                       </TableBody>
                     </Table>

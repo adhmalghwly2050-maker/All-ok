@@ -22,15 +22,43 @@ export function getEndpointColumnHalfWidth(
   x: number,
   y: number,
   isHoriz: boolean,
+  colId?: string,
   tolerance = 0.05,
 ): number {
-  const matchedColumn = columns.find((column) =>
-    !column.isRemoved &&
-    Math.abs(column.x - x) <= tolerance &&
-    Math.abs(column.y - y) <= tolerance,
-  );
+  let matchedColumn: Column | undefined;
+
+  // 1. Try matching by column ID if available
+  if (colId) {
+    matchedColumn = columns.find((c) => c.id === colId && !c.isRemoved);
+  }
+
+  // 2. Try proximity with strict tolerance
+  if (!matchedColumn) {
+    matchedColumn = columns.find((column) =>
+      !column.isRemoved &&
+      Math.abs(column.x - x) <= tolerance &&
+      Math.abs(column.y - y) <= tolerance,
+    );
+  }
+
+  // 3. Try column physical footprint overlap for beams not passing through column center
+  if (!matchedColumn) {
+    matchedColumn = columns.find((column) => {
+      if (column.isRemoved) return false;
+      const θ = ((column.orientAngle ?? 0) * Math.PI) / 180;
+      const bHalf = column.b / 2000;
+      const hHalf = column.h / 2000;
+      const xHalf = Math.abs(bHalf * Math.cos(θ)) + Math.abs(hHalf * Math.sin(θ));
+      const yHalf = Math.abs(bHalf * Math.sin(θ)) + Math.abs(hHalf * Math.cos(θ));
+
+      const dx = Math.abs(column.x - x);
+      const dy = Math.abs(column.y - y);
+      return dx <= xHalf + 0.15 && dy <= yHalf + 0.15;
+    });
+  }
 
   if (!matchedColumn) return 0;
+
   // Account for column orientAngle (ACI 318-19 §6.3.2.1 rigid end offset).
   // orientAngle=0°: b along X, h along Y.
   // orientAngle=90°: b along Y, h along X.
@@ -121,13 +149,15 @@ export function postprocessFrameResultsForColumnFaces(
           columns,
           originalBeam.x1,
           originalBeam.y1,
-          isHoriz
+          isHoriz,
+          originalBeam.fromCol
         );
         const halfColRight = getEndpointColumnHalfWidth(
           columns,
           originalBeam.x2,
           originalBeam.y2,
-          isHoriz
+          isHoriz,
+          originalBeam.toCol
         );
 
         const releases = effectiveFrameEndReleases?.[beam.beamId] || {};
