@@ -247,7 +247,7 @@ export default function BOQPanel({
       if (!c.design) continue;
       const Lm = c.L / 1000;
       if (c.design.dia && c.design.bars) {
-        addWeight(colSteel, c.design.dia, Lm + 0.8, c.design.bars);
+        addWeight(colSteel, c.design.dia, Lm + 1.0, c.design.bars); // الرئيسية تمتد متر فوق العمود
       }
       const stirMatch = c.design.stirrups?.match(/Φ(\d+)@(\d+)/);
       if (stirMatch) {
@@ -473,7 +473,9 @@ export default function BOQPanel({
                 )}
                 {filteredColumns.length > 0 && (
                   <TableRow>
-                    <TableCell className="text-xs font-medium">الأعمدة (دور أرضي)</TableCell>
+                    <TableCell className="text-xs font-medium">
+                      {storyFilter === 'all' ? 'الأعمدة' : `الأعمدة (${filterLabel})`}
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground">{filteredColumns.length}</TableCell>
                     <TableCell className="text-xs">م³</TableCell>
                     <TableCell className="font-mono text-xs font-bold">{concreteData.colVolume.toFixed(2)}</TableCell>

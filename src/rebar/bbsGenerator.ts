@@ -185,10 +185,10 @@ export function generateBBS(
     const col = filtCols.find(col => col.id === c.id);
     if (!col || col.isRemoved) continue;
     const colLenM = col.L / 1000;
-    const lap = 40 * c.design.dia / 1000;
+    const extension = 1.0; // الرئيسية تمتد متر فوق العمود
     const wastage = WASTAGE_FACTORS.column;
 
-    const barLen = colLenM + lap;
+    const barLen = colLenM + extension;
     const mainWeight = barWeight(c.design.dia, c.design.bars * barLen);
     entries.push({
       barMark: `C${markNum}`, member: c.id, memberType: 'column',

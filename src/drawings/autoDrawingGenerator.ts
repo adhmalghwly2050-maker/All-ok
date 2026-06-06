@@ -348,12 +348,28 @@ export function generateAutoDrawings(
     
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
-    doc.setFontSize(4);
-    doc.setTextColor(0, 0, 150);
-    doc.text(s.id, cx - 2, cy - 4);
-    doc.text(`Short: ${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}`, cx - 10, cy);
-    doc.text(`Long: ${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}`, cx - 10, cy + 4);
-    doc.text(`h=${sd.design.hUsed}mm`, cx - 4, cy + 8);
+
+    const lx = s.x2 - s.x1;
+    const ly = s.y2 - s.y1;
+    const xIsShort = lx <= ly;
+    const xDir = xIsShort ? sd.design.shortDir : sd.design.longDir;
+    const yDir = xIsShort ? sd.design.longDir : sd.design.shortDir;
+
+    const formattedX = `${xDir.bars}Φ${xDir.dia}/m`;
+    const formattedY = `${yDir.bars}Φ${yDir.dia}/m`;
+
+    doc.setFontSize(5.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 64, 0);
+    doc.text(s.id, cx, cy - 3, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(4.5);
+    doc.setTextColor(26, 58, 92);
+    doc.text(`X: ${formattedX}`, cx, cy + 1.5, { align: 'center' });
+
+    doc.setTextColor(123, 26, 0);
+    doc.text(`Y: ${formattedY}`, cx, cy + 5.5, { align: 'center' });
   }
 
   // Slab schedule table
@@ -361,23 +377,22 @@ export function generateAutoDrawings(
   autoTable(doc, {
     startY: 170,
     margin: { left: 230 },
-    head: [['Slab ID', 'Slab Thickness', 'Long Dir Rebar', 'Short Dir Rebar']],
+    head: [['Slab ID', 'Slab Thickness', 'X-dir Rebar', 'Y-dir Rebar']],
     body: slabDesigns.map(s => {
       const slab = slabs.find(sl => sl.id === s.id);
-      let shortLabel = 'X-dir';
-      let longLabel = 'Y-dir';
+      let xIsShort = true;
       if (slab) {
         const dx = Math.abs(slab.x2 - slab.x1);
         const dy = Math.abs(slab.y2 - slab.y1);
-        const xIsShort = dx <= dy;
-        shortLabel = xIsShort ? 'X-dir' : 'Y-dir';
-        longLabel = xIsShort ? 'Y-dir' : 'X-dir';
+        xIsShort = dx <= dy;
       }
+      const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
+      const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
       return [
         s.id,
         `${s.design.hUsed} mm`,
-        `${longLabel} ${s.design.longDir.bars}Φ${s.design.longDir.dia}/m`,
-        `${shortLabel} ${s.design.shortDir.bars}Φ${s.design.shortDir.dia}/m`,
+        `${xDir.bars}Φ${xDir.dia}/m`,
+        `${yDir.bars}Φ${yDir.dia}/m`,
       ];
     }),
     styles: { fontSize: 6 },

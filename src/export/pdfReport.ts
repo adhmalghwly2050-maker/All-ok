@@ -338,24 +338,23 @@ export function generateStructuralReport(
 
   autoTable(doc, {
     startY: y,
-    head: [['Story', 'Slab', 'Lx', 'Ly', 'h', 'Wu', 'Short Dir', 'Long Dir', 'Type', 'Method']],
+    head: [['Story', 'Slab', 'Lx', 'Ly', 'h', 'Wu', 'X-dir Rebar', 'Y-dir Rebar', 'Type', 'Method']],
     body: slabDesigns.map(s => {
       const slab = slabs.find(sl => sl.id === s.id);
-      let shortLabel = 'X-dir';
-      let longLabel = 'Y-dir';
+      let xIsShort = true;
       if (slab) {
         const dx = Math.abs(slab.x2 - slab.x1);
         const dy = Math.abs(slab.y2 - slab.y1);
-        const xIsShort = dx <= dy;
-        shortLabel = xIsShort ? 'X-dir' : 'Y-dir';
-        longLabel = xIsShort ? 'Y-dir' : 'X-dir';
+        xIsShort = dx <= dy;
       }
+      const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
+      const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
       return [
         getStoryLabel(slab?.storyId), s.id,
         s.design.lx.toFixed(1), s.design.ly.toFixed(1),
         s.design.hUsed.toString(), s.design.Wu.toFixed(2),
-        `${shortLabel} ${s.design.shortDir.bars}Φ${s.design.shortDir.dia}/m`,
-        `${longLabel} ${s.design.longDir.bars}Φ${s.design.longDir.dia}/m`,
+        `${xDir.bars}Φ${xDir.dia}/m`,
+        `${yDir.bars}Φ${yDir.dia}/m`,
         s.design.isOneWay ? 'One-Way' : 'Two-Way',
         s.design.usedApproximateMethod ? 'Marcus (Approx.)' : 'ACI',
       ];

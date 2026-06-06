@@ -21,7 +21,7 @@ export default function AutoDesignPanel({ slabs, onApply }: AutoDesignPanelProps
   const [fy, setFy] = useState(280);
   const [fyt, setFyt] = useState(280);
   const [gamma, setGamma] = useState(25);
-  const [floorHeight, setFloorHeight] = useState(4000);
+  const [floorHeight, setFloorHeight] = useState(3000);
   const [numFloors, setNumFloors] = useState(1);
   const [result, setResult] = useState<AutoDesignResult | null>(null);
 

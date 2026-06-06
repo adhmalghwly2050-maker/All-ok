@@ -745,8 +745,35 @@ const Index = () => {
       return beamId;
     }
     
+    // Check if this beamId has a split format X-N (e.g., 66-2)
+    const m = beamId.match(/^(.+)-(\d+)$/);
+    if (m) {
+      const baseId = m[1];
+      const existingPartsCount = beamsWithLoads.filter(b => b.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+      if (existingPartsCount === 1) {
+        const beam = beamsWithLoads.find(b => b.id === beamId);
+        if (beam && beam.name) {
+          return beam.name.replace(/-\d+$/, '');
+        }
+        return baseId;
+      }
+    }
+    
     const beam = beamsWithLoads.find(b => b.id === beamId);
     if (beam && beam.name) {
+      const nm = beam.name.match(/^(.+)-(\d+)$/);
+      if (nm) {
+        const baseName = nm[1];
+        const bId = beam.id;
+        const bIdM = bId.match(/^(.+)-(\d+)$/);
+        if (bIdM) {
+          const baseId = bIdM[1];
+          const existingPartsCount = beamsWithLoads.filter(b => b.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+          if (existingPartsCount === 1) {
+            return baseName;
+          }
+        }
+      }
       return beam.name;
     }
     
@@ -755,6 +782,9 @@ const Index = () => {
       const parts = beamsWithLoads.filter(b => b.id.startsWith(parentId + '-'));
       const namedPart = parts.find(p => p.name);
       if (namedPart && namedPart.name) {
+        if (parts.length === 1) {
+          return namedPart.name.replace(/-\d+$/, '');
+        }
         const indexSuffix = beamId.slice(beamId.lastIndexOf('-'));
         const cleanName = namedPart.name.replace(/-\d+$/, '');
         return cleanName + indexSuffix;
@@ -1627,7 +1657,7 @@ const Index = () => {
     }
 
     // Build reverse map: partId → canonicalId  (e.g. "67-1" → "67")
-    // This is used to detect frames whose beams are ALL parts of one carrier beam group
+    // This is used to detect frames whose beams are parts of one carrier beam group
     const partToCanonical = new Map<string, string>();
     for (const [canonicalId, partIds] of Object.entries(splitBeamGroups)) {
       for (const pid of partIds) partToCanonical.set(pid, canonicalId);
@@ -1637,78 +1667,128 @@ const Index = () => {
       const fr = frameResults.find(r => r.frameId === f.id);
       if (!fr) return null;
 
-      // Check whether ALL beams in this frame belong to the SAME carrier-beam split group
-      const mappedCanonicals = f.beamIds.map(id => partToCanonical.get(id));
-      const uniqueCanonicals = new Set(mappedCanonicals.filter(Boolean));
-      const allAreSameCarrier =
-        uniqueCanonicals.size === 1 &&
-        mappedCanonicals.every(c => c !== undefined);
+      const mergedBeamIds: string[] = [];
+      const mergedBeamsResult: FrameResult['beams'] = [];
+      const frameLocalBMap = new Map(bMap);
+      
+      const beamIdList = f.beamIds;
+      const originalBeamResults = fr.beams;
+      
+      let i = 0;
+      while (i < beamIdList.length) {
+        const currentId = beamIdList[i];
+        const currentCanon = partToCanonical.get(currentId);
+        
+        if (currentCanon) {
+          // Find how many consecutive beams belong to the exact same split-beam canonical group
+          let j = i + 1;
+          while (j < beamIdList.length && partToCanonical.get(beamIdList[j]) === currentCanon) {
+            j++;
+          }
+          
+          const partsToMergeRange = beamIdList.slice(i, j);
+          const canonicalId = currentCanon;
+          
+          // Gather results and beam objects
+          const segmentData = partsToMergeRange.map(id => {
+            const br = originalBeamResults.find(r => r.beamId === id);
+            const beam = frameLocalBMap.get(id);
+            return { id, br, beam };
+          }).filter(p => p.br !== undefined);
+          
+          if (segmentData.length > 0) {
+            // Sort parts left->right (or bottom->top) by physical position
+            const partData = segmentData.map(p => {
+              const beam = frameLocalBMap.get(p.id);
+              const posMin = beam
+                ? (beam.direction === 'horizontal'
+                    ? Math.min(beam.x1, beam.x2)
+                    : Math.min(beam.y1, beam.y2))
+                : 0;
+              return { ...p, posMin };
+            }).sort((a, b) => a.posMin - b.posMin);
+            
+            const leftPart = partData[0];
+            const rightPart = partData[partData.length - 1];
+            const totalSpan = partData.reduce((s, p) => s + (p.br?.span ?? 0), 0);
+            
+            const refBeam = partData.reduce<typeof partData[0]['beam']>((best, p) => {
+              if (!p.beam) return best;
+              if (!best) return p.beam;
+              return p.beam.b * p.beam.h >= best.b * best.h ? p.beam : best;
+            }, undefined);
+            
+            if (refBeam) {
+              const syntheticBeam = { ...refBeam, id: canonicalId, length: totalSpan * 1000 };
+              frameLocalBMap.set(canonicalId, syntheticBeam);
+              
+              mergedBeamIds.push(canonicalId);
+              mergedBeamsResult.push({
+                beamId: canonicalId,
+                span: totalSpan,
+                Mleft: leftPart.br ? leftPart.br.Mleft : 0,
+                Mmid: Math.max(...partData.map(p => p.br ? p.br.Mmid : 0)),
+                Mright: rightPart.br ? rightPart.br.Mright : 0,
+                Vu: Math.max(...partData.flatMap(p => [
+                  Math.abs(p.br?.Rleft ?? 0),
+                  Math.abs(p.br?.Rright ?? 0),
+                ])),
+                Rleft: leftPart.br ? (leftPart.br.Rleft ?? 0) : 0,
+                Rright: rightPart.br ? (rightPart.br.Rright ?? 0) : 0,
+              });
+            } else {
+              for (const part of segmentData) {
+                if (part.br) {
+                  mergedBeamIds.push(part.id);
+                  mergedBeamsResult.push(part.br);
+                }
+              }
+            }
+          }
+          
+          i = j;
+        } else {
+          const m = currentId.match(/^(.+)-(\d+)$/);
+          if (m) {
+            const baseId = m[1];
+            const existingPartsCount = beamsWithLoads.filter(b => b.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+            if (existingPartsCount === 1) {
+              const beam = frameLocalBMap.get(currentId);
+              const br = originalBeamResults.find(r => r.beamId === currentId);
+              if (beam && br) {
+                const syntheticBeam = { ...beam, id: baseId };
+                frameLocalBMap.set(baseId, syntheticBeam);
+                mergedBeamIds.push(baseId);
+                mergedBeamsResult.push({
+                  ...br,
+                  beamId: baseId,
+                });
+                i++;
+                continue;
+              }
+            }
+          }
 
-      if (allAreSameCarrier) {
-        // ── الجسر الحامل المقسّم: نعامله كجسر واحد ──────────────────────────────
-        // e.g. frame [67-1, 67-2, 67-3] → single beam "67" spanning the full length
-        const canonicalId = [...uniqueCanonicals][0]!;
-
-        // Sort parts left→right (or bottom→top) by physical position
-        const partData = fr.beams.map(br => {
-          const beam = bMap.get(br.beamId);
-          const posMin = beam
-            ? (beam.direction === 'horizontal'
-                ? Math.min(beam.x1, beam.x2)
-                : Math.min(beam.y1, beam.y2))
-            : 0;
-          return { br, beam, posMin };
-        }).sort((a, b) => a.posMin - b.posMin);
-
-        if (partData.length === 0) return null;
-
-        const leftPart  = partData[0];
-        const rightPart = partData[partData.length - 1];
-        const totalSpan = partData.reduce((s, p) => s + p.br.span, 0);
-
-        // Reference beam: largest cross-section (matches beamDesigns grouping logic)
-        const refBeam = partData.reduce<typeof partData[0]['beam']>((best, p) => {
-          if (!p.beam) return best;
-          if (!best) return p.beam;
-          return p.beam.b * p.beam.h >= best.b * best.h ? p.beam : best;
-        }, undefined);
-        if (!refBeam) return null;
-
-        // Synthetic beam object with canonical ID and total span
-        const syntheticBeam = { ...refBeam, id: canonicalId, length: totalSpan * 1000 };
-        const synBMap = new Map(bMap);
-        synBMap.set(canonicalId, syntheticBeam);
-
-        // Synthetic single-span frame (no intermediate supports)
-        const synFrame: Frame = {
-          id: f.id,
-          beamIds: [canonicalId],
-          direction: f.direction,
-          storyId: f.storyId,
-        };
-
-        // Synthetic frame result: end moments from outer parts, Mmid = max across all
-        const synFr: FrameResult = {
-          frameId: f.id,
-          beams: [{
-            beamId: canonicalId,
-            span: totalSpan,
-            Mleft:  leftPart.br.Mleft,
-            Mmid:   Math.max(...partData.map(p => p.br.Mmid)),
-            Mright: rightPart.br.Mright,
-            Vu:     Math.max(...partData.flatMap(p => [
-              Math.abs(p.br.Rleft ?? 0),
-              Math.abs(p.br.Rright ?? 0),
-            ])),
-            Rleft:  leftPart.br.Rleft  ?? 0,
-            Rright: rightPart.br.Rright ?? 0,
-          }],
-        };
-
-        return calculateFrameBentUp(synFrame, synBMap, synFr, mat, frames, secBeamIds);
+          const br = originalBeamResults.find(r => r.beamId === currentId);
+          if (br) {
+            mergedBeamIds.push(currentId);
+            mergedBeamsResult.push(br);
+          }
+          i++;
+        }
       }
 
-      return calculateFrameBentUp(f, bMap, fr, mat, frames, secBeamIds);
+      const synFrame: Frame = {
+        ...f,
+        beamIds: mergedBeamIds,
+      };
+      
+      const synFr: FrameResult = {
+        ...fr,
+        beams: mergedBeamsResult,
+      };
+
+      return calculateFrameBentUp(synFrame, frameLocalBMap, synFr, mat, frames, secBeamIds);
     }).filter(Boolean) as FrameBentUpResult[];
   }, [analyzed, frames, beamsWithLoads, frameResults, mat, detectedConnections, splitBeamGroups]);
 
@@ -2218,8 +2298,9 @@ const Index = () => {
 
   // Helper: get bent-up-adjusted top bars for a beam
   const getBentUpData = (beamId: string) => {
+    const canonId = beamId.match(/^(.+)-(\d+)$/)?.[1] || beamId;
     for (const fr of bentUpResults) {
-      const b = fr.beams.find(bb => bb.beamId === beamId);
+      const b = fr.beams.find(bb => bb.beamId === beamId || bb.beamId === canonId);
       if (b) return b;
     }
     return null;
@@ -2563,6 +2644,9 @@ const Index = () => {
                       <ParamInput label="ارتفاع الجسر (مم)" value={beamH} onChange={v => dispatch({ type: 'SET_BEAM_H', value: v })} />
                       <ParamInput label="عرض العمود (مم)" value={colB} onChange={v => dispatch({ type: 'SET_COL_B', value: v })} />
                       <ParamInput label="عمق العمود (مم)" value={colH} onChange={v => dispatch({ type: 'SET_COL_H', value: v })} />
+                      <div className="col-span-2">
+                        <ParamInput label="ارتفاع الدور / العمود الافتراضي (مم)" value={colL} onChange={v => dispatch({ type: 'SET_COL_L', value: v })} />
+                      </div>
                     </CardContent>
                     <CardFooter className="pt-2">
                       <Button size="sm" className="w-full h-9 text-xs" onClick={() => dispatch({ type: 'SAVE_SNAPSHOT', message: 'تم حفظ أبعاد العناصر ✓' })}>
@@ -2595,7 +2679,7 @@ const Index = () => {
                     dispatch({ type: 'SET_COL_B', value: result.colB });
                     dispatch({ type: 'SET_COL_H', value: result.colH });
                     dispatch({ type: 'SET_MAT', mat: result.matProps });
-                    dispatch({ type: 'SET_COL_L', value: result.slabProps.thickness > 0 ? state.colL : 4000 });
+                    dispatch({ type: 'SET_COL_L', value: result.slabProps.thickness > 0 ? state.colL : 3000 });
                     dispatch({ type: 'SAVE_SNAPSHOT', message: 'تم تطبيق التصميم التلقائي ✓' });
                   }}
                 />
@@ -6062,28 +6146,28 @@ const Index = () => {
                   <CardContent className="overflow-x-auto">
                     <Table>
                       <TableHeader><TableRow>
-                        {['اسم البلاطة', 'سماكة البلاطة', 'التسليح في الاتجاه الطويل', 'التسليح في الاتجاه القصير'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
+                        {['اسم البلاطة', 'سماكة البلاطة', 'التسليح في الاتجاه x', 'التسليح في الاتجاه y'].map(h => <TableHead key={h} className="text-xs">{h}</TableHead>)}
                       </TableRow></TableHeader>
                       <TableBody>
                         {stories.map(story =>
                           (isAllStories || story.id === selectedStoryId) &&
                           slabDesigns.map(s => {
                             const slab = slabs.find(sl => sl.id === s.id);
-                            let longLabel = 'اتجاه y';
-                            let shortLabel = 'اتجاه x';
+                            if (slab && slab.storyId !== story.id) return null;
+                            let xIsShort = true;
                             if (slab) {
                               const dx = Math.abs(slab.x2 - slab.x1);
                               const dy = Math.abs(slab.y2 - slab.y1);
-                              const xIsShort = dx <= dy;
-                              longLabel = xIsShort ? 'اتجاه y' : 'اتجاه x';
-                              shortLabel = xIsShort ? 'اتجاه x' : 'اتجاه y';
+                              xIsShort = dx <= dy;
                             }
+                            const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
+                            const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
                             return (
                               <TableRow key={`${story.id}-${s.id}`} className="cursor-pointer" onClick={() => handleSelectElement('slab', s.id)}>
                                 <TableCell className="font-mono text-xs">{isAllStories ? `${story.label} - ${s.id}` : s.id}</TableCell>
                                 <TableCell className="font-mono text-xs">{s.design.hUsed} mm</TableCell>
-                                <TableCell className="font-mono text-xs">{longLabel} {s.design.longDir.bars}Φ{s.design.longDir.dia}/m</TableCell>
-                                <TableCell className="font-mono text-xs">{shortLabel} {s.design.shortDir.bars}Φ{s.design.shortDir.dia}/m</TableCell>
+                                <TableCell className="font-mono text-xs">{xDir.bars}Φ{xDir.dia}/m</TableCell>
+                                <TableCell className="font-mono text-xs">{yDir.bars}Φ{yDir.dia}/m</TableCell>
                               </TableRow>
                             );
                           })
@@ -6238,6 +6322,7 @@ const Index = () => {
                 analyzed={hasDesignResults}
                 foundationResults={foundationResults}
                 foundationMat={foundationMat}
+                bentUpResults={bentUpResults}
               />
 
               {/* Additional quick export buttons */}

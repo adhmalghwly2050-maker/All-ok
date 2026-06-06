@@ -93,26 +93,72 @@ function drawBeamCrossSection(
   doc.rect(sx + stCover, sy + stCover, sW - 2 * stCover, sH - 2 * stCover);
 
   const topR = (topDia * scl) / 2;
-  if (nTopBars > 0) {
-    const topBarY = sy + stCover + stDia + topR;
-    const topAvail = sW - 2 * stCover - 2 * stDia - 2 * topR;
-    const topSp = nTopBars > 1 ? topAvail / (nTopBars - 1) : 0;
-    for (let i = 0; i < nTopBars; i++) {
-      const bx = sx + stCover + stDia + topR + i * topSp;
+  let nTopLayer2 = 0;
+  let nTopLayer1 = nTopBars;
+  if (nTopBars > 1) {
+    const b_avail = bMm - 2 * (coverMm + stirrupDiaMm);
+    const min_spacing = Math.max(25, topDia);
+    const maxInLayer = Math.floor((b_avail + min_spacing) / (topDia + min_spacing));
+    if (nTopBars > maxInLayer) {
+      nTopLayer2 = nTopBars - maxInLayer;
+      nTopLayer1 = maxInLayer;
+    }
+  }
+
+  if (nTopLayer1 > 0) {
+    const topBarY1 = sy + stCover + stDia + topR;
+    const topAvail1 = sW - 2 * stCover - 2 * stDia - 2 * topR;
+    const topSp1 = nTopLayer1 > 1 ? topAvail1 / (nTopLayer1 - 1) : 0;
+    for (let i = 0; i < nTopLayer1; i++) {
+      const bx = sx + stCover + stDia + topR + i * topSp1;
       doc.setFillColor(0, 0, 0);
-      (doc as any).circle(bx, topBarY, Math.max(topR, 0.6), 'F');
+      (doc as any).circle(bx, topBarY1, Math.max(topR, 0.6), 'F');
+    }
+  }
+  if (nTopLayer2 > 0) {
+    const min_spacing_top = 0;
+    const topBarY2 = sy + stCover + stDia + topR + (min_spacing_top * scl) + 2 * topR;
+    const topAvail2 = sW - 2 * stCover - 2 * stDia - 2 * topR;
+    const topSp2 = nTopLayer2 > 1 ? topAvail2 / (nTopLayer2 - 1) : 0;
+    for (let i = 0; i < nTopLayer2; i++) {
+      const bx = sx + stCover + stDia + topR + i * topSp2;
+      doc.setFillColor(0, 0, 0);
+      (doc as any).circle(bx, topBarY2, Math.max(topR, 0.6), 'F');
     }
   }
 
   const botR = (botDia * scl) / 2;
-  if (nBotBars > 0) {
-    const botBarY = sy + sH - stCover - stDia - botR;
-    const botAvail = sW - 2 * stCover - 2 * stDia - 2 * botR;
-    const botSp = nBotBars > 1 ? botAvail / (nBotBars - 1) : 0;
-    for (let i = 0; i < nBotBars; i++) {
-      const bx = sx + stCover + stDia + botR + i * botSp;
+  let nBotLayer2 = 0;
+  let nBotLayer1 = nBotBars;
+  if (nBotBars > 1) {
+    const b_avail = bMm - 2 * (coverMm + stirrupDiaMm);
+    const min_spacing = Math.max(25, botDia);
+    const maxInLayer = Math.floor((b_avail + min_spacing) / (botDia + min_spacing));
+    if (nBotBars > maxInLayer) {
+      nBotLayer2 = nBotBars - maxInLayer;
+      nBotLayer1 = maxInLayer;
+    }
+  }
+
+  if (nBotLayer1 > 0) {
+    const botBarY1 = sy + sH - stCover - stDia - botR;
+    const botAvail1 = sW - 2 * stCover - 2 * stDia - 2 * botR;
+    const botSp1 = nBotLayer1 > 1 ? botAvail1 / (nBotLayer1 - 1) : 0;
+    for (let i = 0; i < nBotLayer1; i++) {
+      const bx = sx + stCover + stDia + botR + i * botSp1;
       doc.setFillColor(0, 0, 0);
-      (doc as any).circle(bx, botBarY, Math.max(botR, 0.6), 'F');
+      (doc as any).circle(bx, botBarY1, Math.max(botR, 0.6), 'F');
+    }
+  }
+  if (nBotLayer2 > 0) {
+    const min_spacing_bot = 0;
+    const botBarY2 = sy + sH - stCover - stDia - botR - (min_spacing_bot * scl) - 2 * botR;
+    const botAvail2 = sW - 2 * stCover - 2 * stDia - 2 * botR;
+    const botSp2 = nBotLayer2 > 1 ? botAvail2 / (nBotLayer2 - 1) : 0;
+    for (let i = 0; i < nBotLayer2; i++) {
+      const bx = sx + stCover + stDia + botR + i * botSp2;
+      doc.setFillColor(0, 0, 0);
+      (doc as any).circle(bx, botBarY2, Math.max(botR, 0.6), 'F');
     }
   }
 
@@ -204,8 +250,8 @@ function drawBeamElevation(
 
   // Bent bar calculations
   const totalBotBars   = design.flexMid.bars;
-  const hasBentBars    = totalBotBars >= 4;
-  const bentBarsCount  = hasBentBars ? Math.min(2, Math.floor(totalBotBars / 2)) : 0;
+  const hasBentBars    = totalBotBars >= 3;
+  const bentBarsCount  = hasBentBars ? Math.floor(totalBotBars / 2) : 0;
   const continuousBotBars = totalBotBars - bentBarsCount;
 
   // ── LAYOUT: Top 55% for elevation, Bottom 45% for bar detailing ──
@@ -1001,20 +1047,84 @@ export function generateConstructionSheets(
       ['مستقيم', 'مكسح', 'مستقيم', 'مكسح'],
     ],
     body: beamDesigns.map(d => {
-      const beam = beams.find(b => b.id === d.beamId);
+      const beam = beams.find(b => b.id === d.beamId) || beams.find(b => b.id.startsWith(d.beamId + '-'));
       const totalBot = d.flexMid.bars;
-      const hasBent = totalBot >= 4;
-      const bentCount = hasBent ? Math.min(2, Math.floor(totalBot / 2)) : 0;
-      const straightBot = totalBot - bentCount;
-      const topBars = Math.max(d.flexLeft.bars, d.flexRight.bars);
+      const hasBent = totalBot >= 3;
+
+      const canonId = d.beamId.match(/^(.+)-(\d+)$/)?.[1] || d.beamId;
+      let bent: any = null;
+      if (options?.bentUpResults) {
+        for (const fr of options.bentUpResults) {
+          const bResult = fr.beams?.find((bb: any) => bb.beamId === d.beamId || bb.beamId === canonId);
+          if (bResult) {
+            bent = bResult;
+            break;
+          }
+        }
+      }
+
+      const bentCount = bent ? bent.bentUp.bentBarsCount : (hasBent ? Math.floor(totalBot / 2) : 0);
+      const straightBot = bent ? bent.bentUp.remainingBottomBars : (totalBot - bentCount);
+      const extraTop = bent ? bent.finalTopBars : Math.max(2, Math.max(d.flexLeft.bars, d.flexRight.bars) - bentCount);
+
+      const botDia = bent ? bent.bottomDia : d.flexMid.dia;
+      const topDia = bent ? bent.topDia : Math.max(d.flexLeft.dia, d.flexRight.dia);
+
+      // Clean / Merged Display Name for Split Beams
+      let displayName = d.beamId;
+      const mergedCarrierIds = (d as any).mergedCarrierIds as string[] | null;
+      if (mergedCarrierIds && mergedCarrierIds.length >= 2) {
+        const parts = mergedCarrierIds.map(id => beams.find(b => b.id === id)).filter(Boolean);
+        const namedPart = parts.find(p => p.name);
+        if (namedPart && namedPart.name) {
+          displayName = namedPart.name.replace(/-\d+$/, '');
+        }
+      } else if (beam && beam.name) {
+        const nm = beam.name.match(/^(.+)-(\d+)$/);
+        if (nm) {
+          const baseName = nm[1];
+          const bId = beam.id;
+          const bIdM = bId.match(/^(.+)-(\d+)$/);
+          if (bIdM) {
+            const baseId = bIdM[1];
+            const existingPartsCount = beams.filter(b => b.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+            if (existingPartsCount === 1) {
+              displayName = baseName;
+            } else {
+              displayName = beam.name;
+            }
+          } else {
+            displayName = beam.name;
+          }
+        } else {
+          displayName = beam.name;
+        }
+      } else if (d.beamId.includes('-')) {
+        const parentId = d.beamId.slice(0, d.beamId.lastIndexOf('-'));
+        const parts = beams.filter(b => b.id.startsWith(parentId + '-'));
+        const namedPart = parts.find(p => p.name);
+        if (namedPart && namedPart.name) {
+          if (parts.length === 1) {
+            displayName = namedPart.name.replace(/-\d+$/, '');
+          } else {
+            const indexSuffix = d.beamId.slice(d.beamId.lastIndexOf('-'));
+            displayName = namedPart.name.replace(/-\d+$/, '') + indexSuffix;
+          }
+        } else {
+          if (parts.length === 1) {
+            displayName = parentId;
+          }
+        }
+      }
+
       return [
-        d.beamId,
+        displayName,
         `${beam?.b ?? ''}`,
         `${beam?.h ?? ''}`,
-        formatRebar(straightBot, d.flexMid.dia),
-        bentCount > 0 ? formatRebar(bentCount, d.flexMid.dia) : '—',
-        formatRebar(topBars, Math.max(d.flexLeft.dia, d.flexRight.dia)),
-        bentCount > 0 ? formatRebar(bentCount, d.flexMid.dia) : '—',
+        formatRebar(straightBot, botDia),
+        bentCount > 0 ? formatRebar(bentCount, botDia) : '—',
+        formatRebar(extraTop, topDia),
+        bentCount > 0 ? formatRebar(bentCount, botDia) : '—',
         d.shear.stirrups,
       ];
     }),
@@ -1140,27 +1250,51 @@ export function generateConstructionSheets(
     const barR = Math.max(rep.design.dia * scl / 2, 0.8);
     // Distribute bars around perimeter
     const positions: [number, number][] = [];
-    if (nBars <= 4) {
-      positions.push([rx + cover + barR, ry + cover + barR]);
-      positions.push([rx + rectW - cover - barR, ry + cover + barR]);
-      positions.push([rx + cover + barR, ry + rectH - cover - barR]);
-      positions.push([rx + rectW - cover - barR, ry + rectH - cover - barR]);
-    } else {
-      const perSide = Math.ceil(nBars / 4);
-      for (let i = 0; i < nBars && i < perSide * 4; i++) {
-        const side = Math.floor(i / perSide);
-        const idx = i % perSide;
-        const t = perSide > 1 ? idx / (perSide - 1) : 0.5;
-        const innerX1 = rx + cover + barR;
-        const innerX2 = rx + rectW - cover - barR;
-        const innerY1 = ry + cover + barR;
-        const innerY2 = ry + rectH - cover - barR;
-        if (side === 0) positions.push([innerX1 + t * (innerX2 - innerX1), innerY1]);
-        else if (side === 1) positions.push([innerX2, innerY1 + t * (innerY2 - innerY1)]);
-        else if (side === 2) positions.push([innerX2 - t * (innerX2 - innerX1), innerY2]);
-        else positions.push([innerX1, innerY2 - t * (innerY2 - innerY1)]);
+
+    const nBarsToUse = Math.max(4, nBars % 2 === 0 ? nBars : nBars + 1);
+    let bestNx = 2;
+    let bestNy = Math.round(nBarsToUse / 2) + 2 - 2;
+    if (bestNy < 2) bestNy = 2;
+
+    let bestDiff = Infinity;
+    const sum = Math.round(nBarsToUse / 2) + 2;
+    for (let nx = 2; nx <= sum - 2; nx++) {
+      const ny = sum - nx;
+      const ratio = (nx - 1) / Math.max(1, ny - 1);
+      const diff = Math.abs(ratio - (rep.b / rep.h));
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestNx = nx;
+        bestNy = ny;
       }
     }
+
+    const innerX1 = rx + cover + barR;
+    const innerX2 = rx + rectW - cover - barR;
+    const innerY1 = ry + cover + barR;
+    const innerY2 = ry + rectH - cover - barR;
+
+    // Top Side
+    for (let i = 0; i < bestNx; i++) {
+      const t = bestNx > 1 ? i / (bestNx - 1) : 0.5;
+      positions.push([innerX1 + t * (innerX2 - innerX1), innerY1]);
+    }
+    // Bottom Side
+    for (let i = 0; i < bestNx; i++) {
+      const t = bestNx > 1 ? i / (bestNx - 1) : 0.5;
+      positions.push([innerX1 + t * (innerX2 - innerX1), innerY2]);
+    }
+    // Left Side (between corners)
+    for (let j = 1; j < bestNy - 1; j++) {
+      const t = bestNy > 1 ? j / (bestNy - 1) : 0.5;
+      positions.push([innerX1, innerY1 + t * (innerY2 - innerY1)]);
+    }
+    // Right Side (between corners)
+    for (let j = 1; j < bestNy - 1; j++) {
+      const t = bestNy > 1 ? j / (bestNy - 1) : 0.5;
+      positions.push([innerX2, innerY1 + t * (innerY2 - innerY1)]);
+    }
+
     doc.setFillColor(0, 0, 0);
     for (const [px, py] of positions.slice(0, nBars)) {
       (doc as any).circle(px, py, barR, 'F');
@@ -1214,15 +1348,28 @@ export function generateConstructionSheets(
 
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
-    doc.setFontSize(6);
+
+    const lx = s.x2 - s.x1;
+    const ly = s.y2 - s.y1;
+    const xIsShort = lx <= ly;
+    const xDir = xIsShort ? sd.design.shortDir : sd.design.longDir;
+    const yDir = xIsShort ? sd.design.longDir : sd.design.shortDir;
+
+    const formattedX = `${xDir.bars}Φ${xDir.dia}/m`;
+    const formattedY = `${yDir.bars}Φ${yDir.dia}/m`;
+
+    doc.setFontSize(7.5);
     doc.setFont('helvetica', 'bold');
-    doc.setTextColor(0, 0, 120);
-    doc.text(s.id, cx - 2, cy - 6);
+    doc.setTextColor(0, 64, 0);
+    doc.text(s.id, cx, cy - 4, { align: 'center' });
+
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(5);
-    doc.text(`h=${sd.design.hUsed}`, cx - 4, cy - 1);
-    doc.text(`${sd.design.shortDir.bars}Φ${sd.design.shortDir.dia}@${sd.design.shortDir.spacing}`, cx - 12, cy + 4);
-    doc.text(`${sd.design.longDir.bars}Φ${sd.design.longDir.dia}@${sd.design.longDir.spacing}`, cx - 12, cy + 9);
+    doc.setFontSize(6);
+    doc.setTextColor(26, 58, 92);
+    doc.text(`X: ${formattedX}`, cx, cy + 1.5, { align: 'center' });
+
+    doc.setTextColor(123, 26, 0);
+    doc.text(`Y: ${formattedY}`, cx, cy + 6.5, { align: 'center' });
   }
   doc.setTextColor(0);
 
@@ -1236,23 +1383,22 @@ export function generateConstructionSheets(
     startY: TABLE_ZONE.y + 5,
     margin: { left: TABLE_ZONE.x },
     tableWidth: TABLE_WIDTH,
-    head: [['Slab ID', 'Slab Thickness', 'Long Dir Rebar', 'Short Dir Rebar']],
+    head: [['Slab ID', 'Slab Thickness', 'X-dir Rebar', 'Y-dir Rebar']],
     body: slabDesigns.map(s => {
       const slab = slabs.find(sl => sl.id === s.id);
-      let shortLabel = 'X-dir';
-      let longLabel = 'Y-dir';
+      let xIsShort = true;
       if (slab) {
         const dx = Math.abs(slab.x2 - slab.x1);
         const dy = Math.abs(slab.y2 - slab.y1);
-        const xIsShort = dx <= dy;
-        shortLabel = xIsShort ? 'X-dir' : 'Y-dir';
-        longLabel = xIsShort ? 'Y-dir' : 'X-dir';
+        xIsShort = dx <= dy;
       }
+      const xDir = xIsShort ? s.design.shortDir : s.design.longDir;
+      const yDir = xIsShort ? s.design.longDir : s.design.shortDir;
       return [
         s.id,
         `${s.design.hUsed} mm`,
-        `${longLabel} ${s.design.longDir.bars}Φ${s.design.longDir.dia}/m`,
-        `${shortLabel} ${s.design.shortDir.bars}Φ${s.design.shortDir.dia}/m`,
+        `${xDir.bars}Φ${xDir.dia}/m`,
+        `${yDir.bars}Φ${yDir.dia}/m`,
       ];
     }),
     styles: { fontSize: 7, cellPadding: 2 },

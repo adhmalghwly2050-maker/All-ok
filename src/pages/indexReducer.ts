@@ -209,7 +209,7 @@ export const defaultSlabs: Slab[] = [
 ];
 
 const defaultStories: Story[] = [
-  { id: 'ST1', label: 'الدور الأول', height: 4000, elevation: 0 },
+  { id: 'ST1', label: 'الدور الأول', height: 3000, elevation: 0 },
 ];
 
 function recalcElevations(stories: Story[]): Story[] {
@@ -231,8 +231,8 @@ export const initialState: AppState = {
   beamH: 400,
   colB: 300,
   colH: 400,
-  colL: 4000,
-  colLBelow: 4000,
+  colL: 3000,
+  colLBelow: 3000,
   colTopEndCondition: 'F' as const,
   colBottomEndCondition: 'F' as const,
   manualColumnsGenerated: false,

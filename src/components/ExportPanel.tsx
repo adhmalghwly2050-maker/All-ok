@@ -49,12 +49,13 @@ interface ExportPanelProps {
   analyzed: boolean;
   foundationResults?: FootingDesignResult[];
   foundationMat?: FootingMaterials | null;
+  bentUpResults?: any[];
 }
 
 export default function ExportPanel({
   stories, slabs, beams, columns, beamDesigns, colDesigns, slabDesigns,
   mat, slabProps, projectName = 'Structural Design Studio', titleBlockConfig, analyzed,
-  foundationResults, foundationMat,
+  foundationResults, foundationMat, bentUpResults,
 }: ExportPanelProps) {
   const [selectedFloors, setSelectedFloors] = useState<string[]>(stories.map(s => s.id));
   const [drawingTypes, setDrawingTypes] = useState({
@@ -142,6 +143,7 @@ export default function ExportPanel({
           totalStories: stories.length,
           floorCode,
           devLengths,
+          bentUpResults,
           titleBlockConfig: {
             projectName: titleBlockConfig?.projectName || projectName,
             clientName: titleBlockConfig?.clientName,
@@ -427,6 +429,7 @@ export default function ExportPanel({
                       ? { ...titleBlockConfig, fc: mat.fc, fy: mat.fy }
                       : { fc: mat.fc, fy: mat.fy },
                     devLengths,
+                    bentUpResults,
                   } as any,
                   sheetSize === 'A4' ? 'A4' : 'A3',
                 );

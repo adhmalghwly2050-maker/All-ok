@@ -447,4 +447,5 @@ export interface ExportOptions {
   floorCode?: string;
   devLengths?: DevelopmentLengths[];
   titleBlockConfig?: Partial<TitleBlockConfig>;
+  bentUpResults?: any[];
 }

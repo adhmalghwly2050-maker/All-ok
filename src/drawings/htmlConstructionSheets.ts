@@ -24,13 +24,45 @@ interface BeamDesignData {
 
 // ─── Reinforcement group label helpers ───
 
+function getCanonicalBeamId(id: string): string {
+  const m = id.match(/^(.+)-(\d+)$/);
+  return m ? m[1] : id;
+}
+
 /** Build a map of beamId → Arabic group label (ج-1, ج-2, …) by identical reinforcement pattern */
-function buildBeamGroupLabels(beamDesigns: BeamDesignData[]): Map<string, string> {
+function buildBeamGroupLabels(beamDesigns: BeamDesignData[], bentUpResults?: any[]): Map<string, string> {
   const keyToLabel = new Map<string, string>();
   const result = new Map<string, string>();
   let counter = 1;
   for (const d of beamDesigns) {
-    const key = `${d.flexLeft.bars}φ${d.flexLeft.dia}|${d.flexMid.bars}φ${d.flexMid.dia}|${d.flexRight.bars}φ${d.flexRight.dia}|${d.shear.stirrups}`;
+    let bent: any = null;
+    if (bentUpResults) {
+      const canonId = getCanonicalBeamId(d.beamId);
+      for (const fr of bentUpResults) {
+        if (!fr) continue;
+        const bResult = fr.beams?.find((bb: any) => bb.beamId === d.beamId || bb.beamId === canonId);
+        if (bResult) {
+          bent = bResult;
+          break;
+        }
+      }
+    }
+
+    const totalBot = d.flexMid.bars;
+    const isShort = (d.span ?? 0) <= 2.0;
+    const hasBent = !isShort && totalBot >= 3;
+
+    const bentCount = bent ? bent.bentUp.bentBarsCount : (hasBent ? Math.floor(totalBot / 2) : 0);
+    const straightBot = bent ? bent.bentUp.remainingBottomBars : (totalBot - bentCount);
+
+    const topLeftBars = bent ? Math.max(bent.additionalTopLeft, 2) : d.flexLeft.bars;
+    const topRightBars = bent ? Math.max(bent.additionalTopRight, 2) : d.flexRight.bars;
+    const netTop = bent ? bent.finalTopBars : Math.max(2, Math.max(topLeftBars, topRightBars) - bentCount);
+
+    const actualBotDia = bent ? bent.bottomDia : d.flexMid.dia;
+    const actualTopDia = bent ? bent.topDia : Math.max(d.flexLeft.dia, d.flexRight.dia);
+
+    const key = `${straightBot}φ${actualBotDia}|${bentCount}φ${actualBotDia}|${netTop}φ${actualTopDia}|${d.shear.stirrups}`;
     if (!keyToLabel.has(key)) {
       keyToLabel.set(key, `ج-${counter++}`);
     }
@@ -172,6 +204,7 @@ function svgBeamsOnPlan(
   beams: Beam[], columns: Column[],
   tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
   groupLabels?: Map<string, string>,
+  hideLabels?: boolean,
 ): string {
   let svg = '';
 
@@ -230,12 +263,22 @@ function svgBeamsOnPlan(
     }
 
     // ── التسمية: فقط للجسور المستقلة (غير الأجزاء المقسّمة) ──
-    if (!segmentPartIds.has(b.id)) {
+    if (!hideLabels && !segmentPartIds.has(b.id)) {
       const mx = (bx1 + bx2) / 2;
       const my = (by1 + by2) / 2;
       const labelOffset = isHoriz ? -beamThickPx / 2 - 10 : beamThickPx / 2 + 5;
       const groupLabel = groupLabels?.get(b.id);
-      const displayLabel = groupLabel ?? b.name ?? b.id;
+      let displayLabel = groupLabel ?? b.name ?? b.id;
+      if (!groupLabel) {
+        const m = b.id.match(/^(.+)-(\d+)$/);
+        if (m) {
+          const baseId = m[1];
+          const existingPartsCount = beams.filter(x => x.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+          if (existingPartsCount === 1) {
+            displayLabel = b.name ? b.name.replace(/-\d+$/, '') : baseId;
+          }
+        }
+      }
       if (isHoriz) {
         svg += `<text x="${mx}" y="${my + labelOffset}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
       } else {
@@ -245,39 +288,41 @@ function svgBeamsOnPlan(
   }
 
   // ── الجولة الثانية: تسمية مجموعات الأجزاء بتسمية واحدة عند منتصف الجسر الكامل ──
-  for (const [baseId, parts] of segGroupMap) {
-    const first = parts[0];
-    const isHoriz = Math.abs(first.y1 - first.y2) < 0.01;
-    const beamThickPx = Math.max((first.b / 1000) * mmPerM, 6);
-    const namedPart = parts.find(p => p.name);
-    const customBaseName = namedPart && namedPart.name ? namedPart.name.replace(/-\d+$/, '') : baseId;
-    const groupLabel = groupLabels?.get(baseId);
-    const displayLabel = groupLabel ? `${groupLabel}(${customBaseName})` : customBaseName;
+  if (!hideLabels) {
+    for (const [baseId, parts] of segGroupMap) {
+      const first = parts[0];
+      const isHoriz = Math.abs(first.y1 - first.y2) < 0.01;
+      const beamThickPx = Math.max((first.b / 1000) * mmPerM, 6);
+      const namedPart = parts.find(p => p.name);
+      const customBaseName = namedPart && namedPart.name ? namedPart.name.replace(/-\d+$/, '') : baseId;
+      const groupLabel = groupLabels?.get(baseId);
+      const displayLabel = groupLabel ? `${groupLabel}(${customBaseName})` : customBaseName;
 
-    if (isHoriz) {
-      const allX = parts.flatMap(p => {
-        let bx1 = tx(p.x1), bx2 = tx(p.x2);
-        const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
-        const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
-        if (fc) bx1 += (fc.b / 1000) * mmPerM / 2;
-        if (tc) bx2 -= (tc.b / 1000) * mmPerM / 2;
-        return [bx1, bx2];
-      });
-      const midX = (Math.min(...allX) + Math.max(...allX)) / 2;
-      const midY = ty(first.y1);
-      svg += `<text x="${midX}" y="${midY - beamThickPx / 2 - 10}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
-    } else {
-      const allY = parts.flatMap(p => {
-        let by1 = ty(p.y1), by2 = ty(p.y2);
-        const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
-        const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
-        if (fc) by1 -= (fc.h / 1000) * mmPerM / 2;
-        if (tc) by2 += (tc.h / 1000) * mmPerM / 2;
-        return [by1, by2];
-      });
-      const midY = (Math.min(...allY) + Math.max(...allY)) / 2;
-      const midX = tx(first.x1);
-      svg += `<text x="${midX + beamThickPx / 2 + 5}" y="${midY}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
+      if (isHoriz) {
+        const allX = parts.flatMap(p => {
+          let bx1 = tx(p.x1), bx2 = tx(p.x2);
+          const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
+          const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
+          if (fc) bx1 += (fc.b / 1000) * mmPerM / 2;
+          if (tc) bx2 -= (tc.b / 1000) * mmPerM / 2;
+          return [bx1, bx2];
+        });
+        const midX = (Math.min(...allX) + Math.max(...allX)) / 2;
+        const midY = ty(first.y1);
+        svg += `<text x="${midX}" y="${midY - beamThickPx / 2 - 10}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial" text-anchor="middle">${displayLabel}</text>`;
+      } else {
+        const allY = parts.flatMap(p => {
+          let by1 = ty(p.y1), by2 = ty(p.y2);
+          const fc = columns.find(c => Math.abs(c.x - p.x1) < 0.01 && Math.abs(c.y - p.y1) < 0.01);
+          const tc = columns.find(c => Math.abs(c.x - p.x2) < 0.01 && Math.abs(c.y - p.y2) < 0.01);
+          if (fc) by1 -= (fc.h / 1000) * mmPerM / 2;
+          if (tc) by2 += (tc.h / 1000) * mmPerM / 2;
+          return [by1, by2];
+        });
+        const midY = (Math.min(...allY) + Math.max(...allY)) / 2;
+        const midX = tx(first.x1);
+        svg += `<text x="${midX + beamThickPx / 2 + 5}" y="${midY}" font-size="6.5" font-weight="bold" fill="#005000" font-family="Arial">${displayLabel}</text>`;
+      }
     }
   }
 
@@ -288,8 +333,6 @@ function svgSlabsOnPlan(
   slabs: Slab[], slabDesigns: SlabDesignData[],
   tx: (x: number) => number, ty: (y: number) => number, mmPerM: number,
   groupLabels?: Map<string, string>,
-  stripResults?: ContinuousSlabResult[],
-  phiSlab?: number,
 ): string {
   let svg = '';
   for (const s of slabs) {
@@ -300,49 +343,28 @@ function svgSlabsOnPlan(
     svg += `<rect x="${svgX}" y="${svgY}" width="${svgW}" height="${svgH_slab}" fill="rgba(220,235,255,0.25)" stroke="#000096" stroke-width="0.7" />`;
     const cx = tx((s.x1 + s.x2) / 2);
     const cy = ty((s.y1 + s.y2) / 2);
-    const dia = phiSlab || 12;
 
-    // رقم البلاطة في الأعلى دائماً
-    svg += `<text x="${cx}" y="${svgY + 10}" text-anchor="middle" font-size="7" font-weight="bold" fill="#004000" font-family="Arial">${s.id}</text>`;
+    const sd = slabDesigns.find(d => d.id === s.id);
+    if (!sd) continue;
 
-    if (stripResults && stripResults.length > 0) {
-      // ── عرض نتائج الشرائح المستمرة ──
-      const xSpans = stripResults.filter(r => r.direction === 'X').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
-      const ySpans = stripResults.filter(r => r.direction === 'Y').flatMap(r => r.spans.filter(sp => sp.slabId === s.id));
-      const maxAsX = xSpans.length > 0 ? Math.max(...xSpans.map(sp => sp.As_pos)) : null;
-      const maxAsY = ySpans.length > 0 ? Math.max(...ySpans.map(sp => sp.As_pos)) : null;
+    // تحديد أي الاتجاهين هو X (الأفقي)
+    const lx = s.x2 - s.x1;
+    const ly = s.y2 - s.y1;
+    const xIsShort = lx <= ly;
+    const xDir = xIsShort ? sd.design.shortDir : sd.design.longDir;
+    const yDir = xIsShort ? sd.design.longDir : sd.design.shortDir;
 
-      if (maxAsX !== null) {
-        const fmt = fmtAs(maxAsX, dia);
-        // حديد اتجاه X — نص أفقي على امتداد محور X
-        svg += `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#1a3a5c" font-family="Arial">X: ${fmt}</text>`;
-      }
-      if (maxAsY !== null) {
-        const fmt = fmtAs(maxAsY, dia);
-        // حديد اتجاه Y — نص رأسي مدوّر 90° على امتداد محور Y
-        svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#7b1a00" font-family="Arial" transform="rotate(-90 ${cx} ${cy + 10})">Y: ${fmt}</text>`;
-      }
-      if (maxAsX === null && maxAsY === null) {
-        const sd = slabDesigns.find(d => d.id === s.id);
-        svg += `<text x="${cx}" y="${cy + 5}" text-anchor="middle" font-size="5.5" fill="#888" font-family="Arial">منفردة${sd ? `  h=${sd.design.hUsed}` : ''}</text>`;
-      }
-    } else {
-      // ── عرض التصميم المعزول (fallback) ──
-      const sd = slabDesigns.find(d => d.id === s.id);
-      if (!sd) continue;
-      // تحديد أي الاتجاهين هو X (الأفقي)
-      const lx = s.x2 - s.x1;
-      const ly = s.y2 - s.y1;
-      const xIsShort = lx <= ly;
-      const xDir = xIsShort ? sd.design.shortDir : sd.design.longDir;
-      const yDir = xIsShort ? sd.design.longDir : sd.design.shortDir;
-      const nPerMX = Math.max(5, Math.round(1000 / xDir.spacing));
-      const nPerMY = Math.max(5, Math.round(1000 / yDir.spacing));
-      // حديد X — أفقي
-      svg += `<text x="${cx}" y="${cy - 3}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#1a3a5c" font-family="Arial">X: ${nPerMX}@Φ${xDir.dia}/م</text>`;
-      // حديد Y — رأسي مدوّر
-      svg += `<text x="${cx}" y="${cy + 10}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#7b1a00" font-family="Arial" transform="rotate(-90 ${cx} ${cy + 10})">Y: ${nPerMY}@Φ${yDir.dia}/م</text>`;
-    }
+    const formattedX = `${xDir.bars}Φ${xDir.dia}/m`;
+    const formattedY = `${yDir.bars}Φ${yDir.dia}/m`;
+
+    // 1. اسم البلاطة بخط واضح وحجم مناسب وفي مكان مناسب في وسط البلاطة تماماً
+    svg += `<text x="${cx}" y="${cy - 11}" text-anchor="middle" font-size="9" font-weight="black" fill="#004000" font-family="'Segoe UI', Arial, sans-serif" letter-spacing="0.5">${s.id}</text>`;
+
+    // 2. حديد اتجاه X - أفقي
+    svg += `<text x="${cx}" y="${cy + 3}" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#1a3a5c" font-family="Arial">X: ${formattedX}</text>`;
+
+    // 3. حديد اتجاه Y - أفقي
+    svg += `<text x="${cx}" y="${cy + 14}" text-anchor="middle" font-size="7.5" font-weight="bold" fill="#7b1a00" font-family="Arial">Y: ${formattedY}</text>`;
   }
   return svg;
 }
@@ -465,8 +487,8 @@ function htmlSheetBorder(): string {
 
 function fmtRebar(bars: number, dia: number): string { return `${bars}Φ${dia}`; }
 
-function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): string {
-  const groupLabels = buildBeamGroupLabels(beamDesigns);
+function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[], bentUpResults?: any[]): string {
+  const groupLabels = buildBeamGroupLabels(beamDesigns, bentUpResults);
 
   // ── تجميع حسب رمز المجموعة (جسور بنفس التسليح = مجموعة واحدة) ──
   const groups = new Map<string, { designs: BeamDesignData[]; memberIds: string[] }>();
@@ -512,14 +534,33 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
 
     const totalBot = d.flexMid.bars;
     const isShort = maxSpan <= 2.0;
-    const hasBent = !isShort && totalBot >= 4;
-    const bentCount = hasBent ? Math.min(2, Math.floor(totalBot / 2)) : 0;
-    const straightBot = totalBot - bentCount;
+    const hasBent = !isShort && totalBot >= 3;
 
-    // الحديد العلوي الصافي بعد خصم حديد التكسيح المكسح الذي يرتفع للمنطقة العلوية
-    const topDia = Math.max(d.flexLeft.dia, d.flexRight.dia);
-    const uTop = Math.max(d.flexLeft.bars, d.flexRight.bars);
-    const netTop = Math.max(0, uTop - bentCount);
+    // البحث عن نتائج تكسيح الحديد للجسر داخل المجموعة (باستخدام ID المعين أو الـ Canonical ID للجسر المجزأ)
+    let bent: any = null;
+    if (bentUpResults) {
+      for (const id of memberIds) {
+        const canonId = getCanonicalBeamId(id);
+        for (const fr of bentUpResults) {
+          if (!fr) continue;
+          const bResult = fr.beams?.find((bb: any) => bb.beamId === id || bb.beamId === canonId);
+          if (bResult) {
+            bent = bResult;
+            break;
+          }
+        }
+        if (bent) break;
+      }
+    }
+
+    const bentCount = bent ? bent.bentUp.bentBarsCount : (hasBent ? Math.floor(totalBot / 2) : 0);
+    const straightBot = bent ? bent.bentUp.remainingBottomBars : (totalBot - bentCount);
+
+    const topDia = bent ? bent.topDia : Math.max(d.flexLeft.dia, d.flexRight.dia);
+    const netTop = bent ? bent.finalTopBars : Math.max(2, Math.max(d.flexLeft.bars, d.flexRight.bars) - bentCount);
+
+    const actualBotDia = bent ? bent.bottomDia : d.flexMid.dia;
+    const actualTopDia = bent ? bent.topDia : topDia;
 
     const uniqueIds = [...new Set(memberIds)].sort((a, b) => {
       const na = parseFloat(a.replace(/[^0-9.]/g, ''));
@@ -527,23 +568,34 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
       return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
     });
 
-    const uniqueNames = uniqueIds.map(id => {
-      const bObj = beams.find(x => x.id === id);
-      if (bObj && bObj.name) {
-        return bObj.name;
-      }
-      if (id.includes('-')) {
-        const parentId = id.slice(0, id.lastIndexOf('-'));
-        const siblings = beams.filter(x => x.id.startsWith(parentId + '-'));
-        const namedPart = siblings.find(p => p.name);
-        if (namedPart && namedPart.name) {
-          const indexSuffix = id.slice(id.lastIndexOf('-'));
-          const cleanName = namedPart.name.replace(/-\d+$/, '');
-          return cleanName + indexSuffix;
+    // دمج أسماء الأجزاء المجزأة كـ جسر موحد (مثلاً 165-1، 165-2 تصبح 165)
+    const canonToParts = new Map<string, string[]>();
+    for (const id of uniqueIds) {
+      const canon = getCanonicalBeamId(id);
+      if (!canonToParts.has(canon)) canonToParts.set(canon, []);
+      canonToParts.get(canon)!.push(id);
+    }
+
+    const uniqueNames: string[] = [];
+    for (const [canon, parts] of canonToParts.entries()) {
+      let nameToUse = '';
+      for (const pId of parts) {
+        const bObj = beams.find(x => x.id === pId);
+        if (bObj && bObj.name) {
+          nameToUse = bObj.name.replace(/-\d+$/, '');
+          break;
         }
       }
-      return id;
-    });
+      if (!nameToUse) {
+        const bObjFirst = beams.find(x => x.id === parts[0]);
+        if (bObjFirst && bObjFirst.name) {
+          nameToUse = bObjFirst.name.replace(/-\d+$/, '');
+        } else {
+          nameToUse = canon;
+        }
+      }
+      uniqueNames.push(nameToUse);
+    }
 
     rows += `<tr>
       <td style="background:#f0f8ff; font-weight:bold; color:#1a3a5c; text-align:center; padding:3px;">${groupLabel}</td>
@@ -551,12 +603,83 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
       <td>${b_dim ?? ''}</td>
       <td>${h_dim ?? ''}</td>
       <td>${spanText}</td>
-      <td>${fmtRebar(straightBot, d.flexMid.dia)}</td>
-      <td>${bentCount > 0 ? fmtRebar(bentCount, d.flexMid.dia) : '—'}</td>
-      <td>${netTop > 0 ? fmtRebar(netTop, topDia) : '—'}</td>
+      <td>${fmtRebar(straightBot, actualBotDia)}</td>
+      <td>${bentCount > 0 ? fmtRebar(bentCount, actualBotDia) : '—'}</td>
+      <td>${netTop > 0 ? fmtRebar(netTop, actualTopDia) : '—'}</td>
       <td style="font-size:7px; white-space:nowrap;">${d.shear.stirrups}</td>
     </tr>`;
   }
+
+  // ───สร้าง SVG Typical cross sections สำหรับทุกกลุ่มของ الجسور ───
+  let beamSectionsSvg = '';
+  const groupEntries = Array.from(groups.entries());
+  const bSecW = 115;
+  const bSecH = 120;
+  const bColsPerRow = 2;
+  let bSecIdx = 0;
+
+  for (const [groupLabel, { designs, memberIds }] of groupEntries) {
+    const d = designs[0];
+    let b_dim = 300;
+    let h_dim = 500;
+    for (const design of designs) {
+      let beam = beams.find(b => b.id === design.beamId);
+      if (!beam && (design as any).mergedCarrierIds) {
+        const parts = ((design as any).mergedCarrierIds as string[])
+          .map(id => beams.find(b => b.id === id)).filter(Boolean) as Beam[];
+        if (parts.length > 0) {
+          const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+          b_dim = largest.b; h_dim = largest.h;
+        }
+      } else if (beam) {
+        b_dim = beam.b; h_dim = beam.h;
+      }
+    }
+
+    let bent: any = null;
+    if (bentUpResults) {
+      for (const id of memberIds) {
+        const canonId = getCanonicalBeamId(id);
+        for (const fr of bentUpResults) {
+          if (!fr) continue;
+          const bResult = fr.beams?.find((bb: any) => bb.beamId === id || bb.beamId === canonId);
+          if (bResult) {
+            bent = bResult;
+            break;
+          }
+        }
+        if (bent) break;
+      }
+    }
+
+    const totalBot = d.flexMid.bars;
+    const isShort = d.span <= 2.0;
+    const hasBent = !isShort && totalBot >= 3;
+
+    const bentCount = bent ? bent.bentUp.bentBarsCount : (hasBent ? Math.floor(totalBot / 2) : 0);
+    const straightBot = bent ? bent.bentUp.remainingBottomBars : (totalBot - bentCount);
+
+    const topDia = bent ? bent.topDia : Math.max(d.flexLeft.dia, d.flexRight.dia);
+    const netTop = bent ? bent.finalTopBars : Math.max(2, Math.max(d.flexLeft.bars, d.flexRight.bars) - bentCount);
+    const actualBotDia = bent ? bent.bottomDia : d.flexMid.dia;
+    const actualTopDia = bent ? bent.topDia : topDia;
+
+    const row = Math.floor(bSecIdx / bColsPerRow);
+    const col = bSecIdx % bColsPerRow;
+    const sx = col * bSecW;
+    const sy = row * (bSecH + 15);
+
+    const title = `${groupLabel} (MID-SPAN)`;
+    beamSectionsSvg += _svgCrossSection(
+      sx, sy, bSecW, bSecH,
+      b_dim, h_dim, 40, 10,
+      netTop, actualTopDia, totalBot, actualBotDia,
+      title, bentCount, actualBotDia, false
+    );
+    bSecIdx++;
+  }
+
+  const beamSecSvgH = Math.ceil(bSecIdx / bColsPerRow) * (bSecH + 15);
 
   return `
   <div style="font-weight:bold; font-size:11px; margin-bottom:4px; font-family:Arial;">BEAM SCHEDULE / جدول الجسور</div>
@@ -579,7 +702,7 @@ function htmlBeamScheduleTable(beams: Beam[], beamDesigns: BeamDesignData[]): st
     </thead>
     <tbody>${rows}</tbody>
   </table>
-  <div style="font-size:7px; color:#555; margin-top:3px;">* علوي صافي = الحديد العلوي المطلوب بعد خصم مساهمة حديد التكسيح المكسح في المنطقة العلوية عند الركائز</div>
+  <div style="font-size:7px; color:#555; margin-top:3px;">* علوي صافي = الحديد العلوي المطلوب للركيزة بعد خصم مساهمة حديد التكسيح المكسح عند الركائز</div>
   <div style="font-size:7px; color:#1a3a5c; margin-top:2px;">رمز: مجموعة جسور ذات تسليح متطابق — الأعضاء: أرقام الجسور في المجموعة</div>`;
 }
 
@@ -760,97 +883,121 @@ function htmlSlabScheduleTable(slabDesigns: SlabDesignData[], slabs: Slab[]): st
     const shortDir = s.design.shortDir;
 
     const slab = slabById.get(s.id);
-    let longLabel = 'اتجاه y';
-    let shortLabel = 'اتجاه x';
+    let xIsShort = true;
     if (slab) {
       const dx = Math.abs(slab.x2 - slab.x1);
       const dy = Math.abs(slab.y2 - slab.y1);
-      const xIsShort = dx <= dy;
-      longLabel = xIsShort ? 'اتجاه y' : 'اتجاه x';
-      shortLabel = xIsShort ? 'اتجاه x' : 'اتجاه y';
+      xIsShort = dx <= dy;
     }
 
-    const formattedLong = `${longLabel} ${longDir.bars}Φ${longDir.dia}/m`;
-    const formattedShort = `${shortLabel} ${shortDir.bars}Φ${shortDir.dia}/m`;
+    const xDir = xIsShort ? shortDir : longDir;
+    const yDir = xIsShort ? longDir : shortDir;
+
+    const formattedX = `${xDir.bars}Φ${xDir.dia}/m`;
+    const formattedY = `${yDir.bars}Φ${yDir.dia}/m`;
 
     rows += `<tr>
-      <td style="background:#f5fff5; font-weight:bold; color:#004000; text-align:center;">${s.id}</td>
-      <td style="text-align:center;">${s.design.hUsed} mm</td>
-      <td style="text-align:center; color:#1a3a5c;">${formattedLong}</td>
-      <td style="text-align:center; color:#7b1a00;">${formattedShort}</td>
+      <td style="background:#f5fff5; font-weight:bold; color:#004000; text-align:center; border:1px solid #ccc; padding:4px;">${s.id}</td>
+      <td style="text-align:center; border:1px solid #ccc; padding:4px;">${s.design.hUsed} mm</td>
+      <td style="text-align:center; color:#1a3a5c; border:1px solid #ccc; padding:4px; font-weight:bold;">${formattedX}</td>
+      <td style="text-align:center; color:#7b1a00; border:1px solid #ccc; padding:4px; font-weight:bold;">${formattedY}</td>
     </tr>`;
   }
 
   return `
   <div style="font-weight:bold; font-size:11px; margin-bottom:4px; font-family:Arial;">SLAB SCHEDULE / جدول البلاطات</div>
-  <table style="width:100%; border-collapse:collapse; font-size:9px; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
+  <table style="width:100%; border-collapse:collapse; font-size:9px; font-family:'Segoe UI',Arial,Tahoma,sans-serif; border:1px solid #000;">
     <thead>
       <tr>
-        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">اسم البلاطة</th>
-        <th style="border:1px solid #000; background:#004000; color:#fff; padding:3px 4px;">سماكة البلاطة</th>
-        <th style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:3px 4px;">التسليح في الاتجاه الطويل</th>
-        <th style="border:1px solid #000; background:#7b1a00; color:#fff; padding:3px 4px;">التسليح في الاتجاه القصير</th>
+        <th style="border:1px solid #000; background:#004000; color:#fff; padding:5px 4px;">اسم البلاطة</th>
+        <th style="border:1px solid #000; background:#004000; color:#fff; padding:5px 4px;">سماكة البلاطة</th>
+        <th style="border:1px solid #000; background:#1a3a5c; color:#fff; padding:5px 4px;">التسليح في الاتجاه x</th>
+        <th style="border:1px solid #000; background:#7b1a00; color:#fff; padding:5px 4px;">التسليح في الاتجاه y</th>
       </tr>
     </thead>
     <tbody>${rows}</tbody>
   </table>
   <div style="font-size:7.5px; color:#1a3a5c; margin-top:3px;">
-    القيم: تسليح المتر الطولي للبلاطة (مثال: اتجاه x 5Φ10/m)
+    القيم: تسليح المتر الطولي للبلاطة (مثال: 5Φ10/m)
   </div>`;
 }
 
 // ─── Column cross-section SVG ───
 
-function svgColumnCrossSection(cd: ColDesignData, x: number, y: number, w: number, h: number): string {
+function svgColumnCrossSection(cd: ColDesignData, x: number, y: number, w: number, h: number, groupLabel: string, memberIds: string[]): string {
   const scl = Math.min((w - 20) / cd.b, (h - 40) / cd.h);
   const rectW = cd.b * scl;
   const rectH = cd.h * scl;
   const rx = x + (w - rectW) / 2;
-  const ry = y + 30;
+  const ry = y + 32;
   
   let svg = '';
-  // Outer rectangle
-  svg += `<rect x="${rx}" y="${ry}" width="${rectW}" height="${rectH}" fill="none" stroke="black" stroke-width="1.2" />`;
+  // Outer rectangle (concrete boundary)
+  svg += `<rect x="${rx}" y="${ry}" width="${rectW}" height="${rectH}" fill="#fafafa" stroke="black" stroke-width="1.2" />`;
   
   // Stirrup outline
   const cover = 40 * scl;
-  svg += `<rect x="${rx + cover}" y="${ry + cover}" width="${rectW - 2 * cover}" height="${rectH - 2 * cover}" fill="none" stroke="black" stroke-width="0.7" />`;
+  svg += `<rect x="${rx + cover}" y="${ry + cover}" width="${rectW - 2 * cover}" height="${rectH - 2 * cover}" fill="none" stroke="#222" stroke-width="0.8" />`;
   
   // Rebar dots
   const nBars = cd.design.bars;
-  const barR = Math.max(cd.design.dia * scl / 2, 2);
+  const barR = Math.max(cd.design.dia * scl / 2, 2.2);
   const positions: [number, number][] = [];
   
-  if (nBars <= 4) {
-    positions.push([rx + cover + barR, ry + cover + barR]);
-    positions.push([rx + rectW - cover - barR, ry + cover + barR]);
-    positions.push([rx + cover + barR, ry + rectH - cover - barR]);
-    positions.push([rx + rectW - cover - barR, ry + rectH - cover - barR]);
-  } else {
-    const perSide = Math.ceil(nBars / 4);
-    for (let i = 0; i < nBars && i < perSide * 4; i++) {
-      const side = Math.floor(i / perSide);
-      const idx = i % perSide;
-      const t = perSide > 1 ? idx / (perSide - 1) : 0.5;
-      const innerX1 = rx + cover + barR;
-      const innerX2 = rx + rectW - cover - barR;
-      const innerY1 = ry + cover + barR;
-      const innerY2 = ry + rectH - cover - barR;
-      if (side === 0) positions.push([innerX1 + t * (innerX2 - innerX1), innerY1]);
-      else if (side === 1) positions.push([innerX2, innerY1 + t * (innerY2 - innerY1)]);
-      else if (side === 2) positions.push([innerX2 - t * (innerX2 - innerX1), innerY2]);
-      else positions.push([innerX1, innerY2 - t * (innerY2 - innerY1)]);
+  const nBarsToUse = Math.max(4, nBars % 2 === 0 ? nBars : nBars + 1);
+  let bestNx = 2;
+  let bestNy = Math.round(nBarsToUse / 2) + 2 - 2;
+  if (bestNy < 2) bestNy = 2;
+
+  let bestDiff = Infinity;
+  const sum = Math.round(nBarsToUse / 2) + 2;
+  for (let nx = 2; nx <= sum - 2; nx++) {
+    const ny = sum - nx;
+    const ratio = (nx - 1) / Math.max(1, ny - 1);
+    const diff = Math.abs(ratio - (cd.b / cd.h));
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestNx = nx;
+      bestNy = ny;
     }
+  }
+
+  const innerX1 = rx + cover + barR;
+  const innerX2 = rx + rectW - cover - barR;
+  const innerY1 = ry + cover + barR;
+  const innerY2 = ry + rectH - cover - barR;
+
+  // Top Side
+  for (let i = 0; i < bestNx; i++) {
+    const t = bestNx > 1 ? i / (bestNx - 1) : 0.5;
+    positions.push([innerX1 + t * (innerX2 - innerX1), innerY1]);
+  }
+  // Bottom Side
+  for (let i = 0; i < bestNx; i++) {
+    const t = bestNx > 1 ? i / (bestNx - 1) : 0.5;
+    positions.push([innerX1 + t * (innerX2 - innerX1), innerY2]);
+  }
+  // Left Side (between corners)
+  for (let j = 1; j < bestNy - 1; j++) {
+    const t = bestNy > 1 ? j / (bestNy - 1) : 0.5;
+    positions.push([innerX1, innerY1 + t * (innerY2 - innerY1)]);
+  }
+  // Right Side (between corners)
+  for (let j = 1; j < bestNy - 1; j++) {
+    const t = bestNy > 1 ? j / (bestNy - 1) : 0.5;
+    positions.push([innerX2, innerY1 + t * (innerY2 - innerY1)]);
   }
   
   for (const [px, py] of positions.slice(0, nBars)) {
     svg += `<circle cx="${px}" cy="${py}" r="${barR}" fill="black" />`;
   }
   
-  // Label
-  svg += `<text x="${x + 5}" y="${y + 12}" font-size="7" font-weight="bold" font-family="Arial">${cd.id}</text>`;
-  svg += `<text x="${x + 5}" y="${y + 22}" font-size="6" font-family="Arial">${cd.b}×${cd.h}mm  ${fmtRebar(cd.design.bars, cd.design.dia)}</text>`;
-  svg += `<text x="${x + 5}" y="${ry + rectH + 16}" font-size="6" font-family="Arial">${cd.design.stirrups}</text>`;
+  // Display Group Label (ع-1) and member names
+  const cleanMemberText = memberIds.join(', ');
+  svg += `<text x="${x + w/2}" y="${y + 11}" text-anchor="middle" font-size="7.5" font-weight="bold" font-family="'Segoe UI', Arial, sans-serif" fill="#5c1a00">${groupLabel}</text>`;
+  svg += `<text x="${x + w/2}" y="${y + 20}" text-anchor="middle" font-size="5.5" font-family="'Segoe UI', Arial, sans-serif" fill="#444">الأعضاء: ${cleanMemberText}</text>`;
+  svg += `<text x="${x + w/2}" y="${y + 28}" text-anchor="middle" font-size="5.5" font-family="'Segoe UI', Arial, sans-serif" fill="#111" font-weight="bold">${cd.b}×${cd.h} mm | ${cd.design.bars}Φ${cd.design.dia}</text>`;
+  svg += `<text x="${x + w/2}" y="${ry + rectH + 10}" text-anchor="middle" font-size="5.5" font-weight="bold" font-family="'Segoe UI', Arial, sans-serif" fill="#0000a0">كانات: ${cd.design.stirrups}</text>`;
   
   return svg;
 }
@@ -954,29 +1101,122 @@ function _svgCrossSection(
   x: number, y: number, w: number, h: number,
   bMm: number, hMm: number, coverMm: number, stirDiaMm: number,
   nTop: number, topDia: number, nBot: number, botDia: number, title: string,
+  nBent = 0, bentDia = 12, isSupport = false
 ): string {
-  const scl = Math.min((w - 4) / bMm, (h - 16) / hMm);
+  const isMini = h < 50;
+  
+  // Choose scale reduction to leave space for text labels if not mini
+  const scl = Math.min((w - (isMini ? 4 : 20)) / bMm, (h - (isMini ? 16 : 44)) / hMm);
   const sW = bMm * scl; const sH = hMm * scl;
-  const sx = x + (w - sW) / 2; const sy = y + 14;
+  const sx = x + (w - sW) / 2;
+  const sy = y + (isMini ? 14 : 22);
+
   let s = `<rect x="${sx}" y="${sy}" width="${sW}" height="${sH}" fill="#f5f5f5" stroke="#333" stroke-width="0.8"/>`;
   const stC = coverMm * scl; const stD = stirDiaMm * scl;
   s += `<rect x="${sx + stC}" y="${sy + stC}" width="${sW - 2*stC}" height="${sH - 2*stC}" fill="none" stroke="#555" stroke-width="0.5"/>`;
+
+  // Draw Top Rebar
   const topR = Math.max((topDia * scl) / 2, 1.2);
-  if (nTop > 0) {
-    const tY = sy + stC + stD + topR;
-    const tAv = sW - 2*stC - 2*stD - 2*topR;
-    const tSp = nTop > 1 ? tAv / (nTop - 1) : 0;
-    for (let i = 0; i < nTop; i++) s += `<circle cx="${sx + stC + stD + topR + i * tSp}" cy="${tY}" r="${topR}" fill="#000"/>`;
+  let nTopLayer2 = 0;
+  let nTopLayer1 = nTop;
+  if (nTop > 1) {
+    const b_avail = bMm - 2 * (coverMm + stirDiaMm);
+    const min_spacing = Math.max(25, topDia);
+    const maxInLayer = Math.floor((b_avail + min_spacing) / (topDia + min_spacing));
+    if (nTop > maxInLayer) {
+      nTopLayer2 = nTop - maxInLayer;
+      nTopLayer1 = maxInLayer;
+    }
   }
+
+  if (nTopLayer1 > 0) {
+    const tY1 = sy + stC + stD + topR;
+    const tAv1 = sW - 2*stC - 2*stD - 2*topR;
+    const tSp1 = nTopLayer1 > 1 ? tAv1 / (nTopLayer1 - 1) : 0;
+    for (let i = 0; i < nTopLayer1; i++) {
+      s += `<circle cx="${sx + stC + stD + topR + i * tSp1}" cy="${tY1}" r="${topR}" fill="#000000"/>`;
+    }
+  }
+  if (nTopLayer2 > 0) {
+    const min_spacing_top = 0;
+    const tY2 = sy + stC + stD + topR + (min_spacing_top * scl) + 2 * topR;
+    const tAv2 = sW - 2*stC - 2*stD - 2*topR;
+    const tSp2 = nTopLayer2 > 1 ? tAv2 / (nTopLayer2 - 1) : 0;
+    for (let i = 0; i < nTopLayer2; i++) {
+      s += `<circle cx="${sx + stC + stD + topR + i * tSp2}" cy="${tY2}" r="${topR}" fill="#000000"/>`;
+    }
+  }
+
+  // Draw Bottom Rebar
   const botR = Math.max((botDia * scl) / 2, 1.2);
-  if (nBot > 0) {
-    const bY = sy + sH - stC - stD - botR;
-    const bAv = sW - 2*stC - 2*stD - 2*botR;
-    const bSp = nBot > 1 ? bAv / (nBot - 1) : 0;
-    for (let i = 0; i < nBot; i++) s += `<circle cx="${sx + stC + stD + botR + i * bSp}" cy="${bY}" r="${botR}" fill="#000"/>`;
+  let nBotLayer2 = 0;
+  let nBotLayer1 = nBot;
+  if (nBot > 1) {
+    const b_avail = bMm - 2 * (coverMm + stirDiaMm);
+    const min_spacing = Math.max(25, botDia);
+    const maxInLayer = Math.floor((b_avail + min_spacing) / (botDia + min_spacing));
+    if (nBot > maxInLayer) {
+      nBotLayer2 = nBot - maxInLayer;
+      nBotLayer1 = maxInLayer;
+    }
   }
-  s += `<text x="${x + w/2}" y="${y + 9}" text-anchor="middle" font-size="5.5" font-weight="bold" fill="#000" font-family="Arial">${title}</text>`;
-  s += `<text x="${sx + sW/2}" y="${sy + sH + 8}" text-anchor="middle" font-size="4.5" fill="#666" font-family="Arial">${bMm}×${hMm} mm</text>`;
+
+  if (nBotLayer1 > 0) {
+    const bY1 = sy + sH - stC - stD - botR;
+    const bAv1 = sW - 2*stC - 2*stD - 2*botR;
+    const bSp1 = nBotLayer1 > 1 ? bAv1 / (nBotLayer1 - 1) : 0;
+    for (let i = 0; i < nBotLayer1; i++) {
+      s += `<circle cx="${sx + stC + stD + botR + i * bSp1}" cy="${bY1}" r="${botR}" fill="#000000"/>`;
+    }
+  }
+  if (nBotLayer2 > 0) {
+    const min_spacing_bot = 0;
+    const bY2 = sy + sH - stC - stD - botR - (min_spacing_bot * scl) - 2 * botR;
+    const bAv2 = sW - 2*stC - 2*stD - 2*botR;
+    const bSp2 = nBotLayer2 > 1 ? bAv2 / (nBotLayer2 - 1) : 0;
+    for (let i = 0; i < nBotLayer2; i++) {
+      s += `<circle cx="${sx + stC + stD + botR + i * bSp2}" cy="${bY2}" r="${botR}" fill="#000000"/>`;
+    }
+  }
+
+  // Text title
+  s += `<text x="${x + w/2}" y="${y + (isMini ? 9 : 10)}" text-anchor="middle" font-size="${isMini ? 5.5 : 7.5}" font-weight="bold" fill="#1a3a5c" font-family="'Segoe UI', Arial, sans-serif">${title}</text>`;
+
+  if (!isMini) {
+    // Top steel text label (ar/en)
+    let topText = '';
+    const topLayerSuffix = nTopLayer2 > 0 ? ' (طبقتين)' : '';
+    if (isSupport) {
+      if (nBent > 0) {
+        topText = `علوي: ${nTop}Φ${topDia} (مستقيم + مكسح)${topLayerSuffix}`;
+      } else {
+        topText = `علوي: ${nTop}Φ${topDia} (مستقيم)${topLayerSuffix}`;
+      }
+    } else {
+      topText = `علوي: ${nTop}Φ${topDia} (تعليق)${topLayerSuffix}`;
+    }
+    s += `<text x="${x + w/2}" y="${y + 19}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#222" font-family="'Segoe UI', Arial, sans-serif">${topText}</text>`;
+
+    // Bottom steel text label (ar/en)
+    let botText = '';
+    const botLayerSuffix = nBotLayer2 > 0 ? ' (طبقتين)' : '';
+    if (isSupport) {
+      botText = `سفلي: ${nBot}Φ${botDia} (مستقيم)${botLayerSuffix}`;
+    } else {
+      if (nBent > 0) {
+        botText = `سفلي: ${nBot}Φ${botDia} (مستقيم + مكسح)${botLayerSuffix}`;
+      } else {
+        botText = `سفلي: ${nBot}Φ${botDia} (مستقيم)${botLayerSuffix}`;
+      }
+    }
+    s += `<text x="${x + w/2}" y="${sy + sH + 10}" text-anchor="middle" font-size="6.5" font-weight="bold" fill="#222" font-family="'Segoe UI', Arial, sans-serif">${botText}</text>`;
+
+    // Dimensions Text label
+    s += `<text x="${sx + sW/2}" y="${sy + sH + 19}" text-anchor="middle" font-size="5.5" fill="#333" font-family="'Segoe UI', Arial, sans-serif">${bMm}×${hMm} mm</text>`;
+  } else {
+    s += `<text x="${sx + sW/2}" y="${sy + sH + 8}" text-anchor="middle" font-size="4.5" fill="#666" font-family="Arial">${bMm}×${hMm} mm</text>`;
+  }
+
   s += `<text x="${sx - 2}" y="${sy + sH/2 + 2}" text-anchor="end" font-size="4" fill="#999" font-family="Arial">c=${coverMm}</text>`;
   return s;
 }
@@ -1016,8 +1256,8 @@ function svgBeamElevationDetailed(
   const colWMm     = 400;
 
   const totBot   = design.flexMid.bars;
-  const hasBent  = totBot >= 4;
-  const nBent    = hasBent ? Math.min(2, Math.floor(totBot / 2)) : 0;
+  const hasBent  = totBot >= 3;
+  const nBent    = hasBent ? Math.floor(totBot / 2) : 0;
   const nStraight = totBot - nBent;
 
   // ── Layout ──
@@ -1137,9 +1377,9 @@ function svgBeamElevationDetailed(
 
   // ── Cross-sections right panel ──
   const spX = x + mainW + 4; const spH = (elevH - 12) / 3;
-  s += _svgCrossSection(spX, y+2,        secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop,            topDia, design.flexMid.bars,          botDia, 'SEC A-A (LEFT)');
-  s += _svgCrossSection(spX, y+spH+2,    secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, 0,               topDia, Math.max(nStraight, 2),        botDia, 'SEC B-B (MID)');
-  s += _svgCrossSection(spX, y+2*spH+2,  secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop,            topDia, design.flexMid.bars,          botDia, 'SEC C-C (RIGHT)');
+  s += _svgCrossSection(spX, y+2,        secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop + nBent,    topDia, nStraight,                    botDia, 'SEC A-A (LEFT)', nBent, botDia, true);
+  s += _svgCrossSection(spX, y+spH+2,    secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop,            topDia, totBot,                       botDia, 'SEC B-B (MID)',  nBent, botDia, false);
+  s += _svgCrossSection(spX, y+2*spH+2,  secPanelW-4, spH-2, bB, bH, coverMm, stirDMm, uTop + nBent,    topDia, nStraight,                    botDia, 'SEC C-C (RIGHT)', nBent, botDia, true);
 
   // ═══════════════════════════════════════════════════════
   // PART 2: BAR DETAILING — تفريد الحديد
@@ -1244,6 +1484,7 @@ function htmlBeamElevationSheet(
   beams: Beam[], beamDesigns: BeamDesignData[],
   tbBase: Partial<TitleBlockConfig>, floorCode: string, startSheetNo: number,
   devLengths: DevelopmentLengths[],
+  bentUpResults?: any[],
 ): string {
   const sheetW = _SHEET_W, sheetH = _SHEET_H;
   const titleH = 135 + 36 + 10;
@@ -1252,7 +1493,7 @@ function htmlBeamElevationSheet(
   let sheets = '';
   let sheetNo = startSheetNo;
 
-  const elevGroupLabels = buildBeamGroupLabels(beamDesigns);
+  const elevGroupLabels = buildBeamGroupLabels(beamDesigns, bentUpResults);
   for (let i = 0; i < beamDesigns.length; i++) {
     const d = beamDesigns[i];
     let beam = beams.find(b => b.id === d.beamId);
@@ -1269,8 +1510,18 @@ function htmlBeamElevationSheet(
     }
     if (!beam) continue;
 
+    let displayedBeamId = beam.id;
+    const m = beam.id.match(/^(.+)-(\d+)$/);
+    if (m) {
+      const baseId = m[1];
+      const existingPartsCount = beams.filter(b => b.id.match(new RegExp(`^${baseId}-\\d+$`))).length;
+      if (existingPartsCount === 1) {
+        displayedBeamId = beam.name ? beam.name.replace(/-\d+$/, '') : baseId;
+      }
+    }
+
     const groupLabel = elevGroupLabels.get(d.beamId);
-    const titlePrefix = groupLabel ? `${groupLabel} — BEAM ${beam.id}` : `BEAM ${beam.id}`;
+    const titlePrefix = groupLabel ? `${groupLabel} — BEAM ${displayedBeamId}` : `BEAM ${displayedBeamId}`;
     const svgContent = svgBeamElevationDetailed(beam, d, 0, 0, sheetW - 90, contentH, devLengths, beams);
     const svgZone = `<svg viewBox="0 0 ${sheetW - 90} ${contentH}" width="${sheetW - 90}" height="${contentH}" xmlns="http://www.w3.org/2000/svg">${svgContent}</svg>`;
 
@@ -1321,7 +1572,8 @@ export function openBeamElevationForPrint(
     date: new Date().toLocaleDateString(), fc, fy,
   };
 
-  const sheetsHTML = htmlBeamElevationSheet(beams, beamDesigns, tbBase, floorCode, 1, devLengths);
+  const bentUpResults = (options as any)?.bentUpResults || [];
+  const sheetsHTML = htmlBeamElevationSheet(beams, beamDesigns, tbBase, floorCode, 1, devLengths, bentUpResults);
 
   const htmlContent = `<!DOCTYPE html>
 <html lang="ar">
@@ -1369,7 +1621,7 @@ function htmlBBSSheet(
     const L = beam.length;
     const isShort = L <= 2.0;
     const totalBot = d.flexMid.bars;
-    const bentCount = (!isShort && totalBot >= 4) ? Math.min(2, Math.floor(totalBot / 2)) : 0;
+    const bentCount = (!isShort && totalBot >= 3) ? Math.floor(totalBot / 2) : 0;
     const straightBot = totalBot - bentCount;
     const topLenL = L * 0.30 + hook(d.flexLeft.dia);
     const topLenR = L * 0.30 + hook(d.flexRight.dia);
@@ -1467,6 +1719,97 @@ function htmlBBSSheet(
   </div>`;
 }
 
+function svgTypicalContinuousBeam(): string {
+  let s = `<g stroke="#000" stroke-width="0.8">`;
+  // Columns (supports)
+  // Left Support
+  s += `<rect x="65" y="80" width="30" height="50" fill="#eaeaea" stroke="#555" stroke-width="0.8" />`;
+  s += `<rect x="65" y="10" width="30" height="30" fill="#eaeaea" stroke="#555" stroke-dasharray="2,2" stroke-width="0.5" />`;
+  // Mid Support
+  s += `<rect x="380" y="80" width="40" height="50" fill="#eaeaea" stroke="#555" stroke-width="0.8" />`;
+  s += `<rect x="380" y="10" width="40" height="30" fill="#eaeaea" stroke="#555" stroke-dasharray="2,2" stroke-width="0.5" />`;
+  // Right Support
+  s += `<rect x="705" y="80" width="30" height="50" fill="#eaeaea" stroke="#555" stroke-width="0.8" />`;
+  s += `<rect x="705" y="10" width="30" height="30" fill="#eaeaea" stroke="#555" stroke-dasharray="2,2" stroke-width="0.5" />`;
+
+  // Beam Concrete
+  s += `<rect x="25" y="40" width="750" height="40" fill="none" stroke="#222" stroke-width="1.2" />`;
+  s += `</g>`;
+
+  // Reinforcement Bars
+  // Top continuous/hanger bars (blue/dark)
+  s += `<path d="M 40,75 L 40,46 Q 43,45 45,45 L 755,45 Q 757,45 760,46 L 760,75" fill="none" stroke="#1d4ed8" stroke-width="1.5" />`;
+  
+  // Bottom straight reinforcement (green, running straight through the whole bottom of the beam)
+  s += `<path d="M 40,74 Q 44,75 46,75 L 754,75 Q 756,75 760,74" fill="none" stroke="#16a34a" stroke-width="1.6" />`;
+
+  // Bent-up Reinforcement (Red bars, bending at 45 degrees at L/5 from column faces and going to top support zones)
+  // Bent-up bar 1 (Span 1): hook at left, straight bottom, bend up at 152 to 122 LHS, bend up at 323 to 353 RHS, goes over mid support to 477 (L/5 of Span 2)
+  s += `<path d="M 43,58 L 43,47 L 122,47 L 152,73 L 323,73 L 353,47 L 477,47" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-linejoin="round" />`;
+  
+  // Bent-up bar 2 (Span 2): starts at 323 (L/5 of Span 1), goes over mid support, bend up at 477 to 447 LHS, bend up at 648 to 678 RHS, goes over right support and hooks down at right end
+  s += `<path d="M 323,47 L 447,47 L 477,73 L 648,73 L 678,47 L 757,47 L 757,58" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-linejoin="round" />`;
+
+  // Support top reinforcement (Red, additional top straight reinforcement for negative moment peaks)
+  s += `<line x1="45" y1="49" x2="160" y2="49" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="3,1" />`; // over left support
+  s += `<line x1="280" y1="49" x2="520" y2="49" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="3,1" />`; // over mid support
+  s += `<line x1="640" y1="49" x2="755" y2="49" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="3,1" />`; // over right support
+
+  // Legend box showing multi-color reinforcement keys (highly readable design in vacant top-center zone of SVG)
+  s += `<g transform="translate(145, 12)" font-family="'Segoe UI', Arial, sans-serif" font-size="6">
+    <rect x="-5" y="-5" width="500" height="15" fill="#fcfcfc" stroke="#ccc" stroke-width="0.5" rx="3" />
+    
+    <line x1="5" y1="5" x2="20" y2="5" stroke="#1d4ed8" stroke-width="1.5" />
+    <text x="24" y="7" fill="#1d4ed8" font-weight="bold">أسياخ تعليق الكانات (Hangers)</text>
+    
+    <line x1="130" y1="5" x2="145" y2="5" stroke="#16a34a" stroke-width="1.6" />
+    <text x="149" y="7" fill="#16a34a" font-weight="bold">سفلي مستقيم (Straight Bot.)</text>
+    
+    <line x1="260" y1="5" x2="275" y2="5" stroke="#dc2626" stroke-width="1.8" />
+    <text x="279" y="7" fill="#dc2626" font-weight="bold">حديد مكسح (Bent-up at 45°)</text>
+
+    <line x1="390" y1="5" x2="405" y2="5" stroke="#b91c1c" stroke-width="1.8" stroke-dasharray="3,1" />
+    <text x="409" y="7" fill="#b91c1c" font-weight="bold">علوي إضافي للركب (Support Top)</text>
+  </g>`;
+
+  // Stirrup zones (symbolic ticks)
+  for (let x = 95; x < 375; x += 12) {
+    const sw = (x < 160 || x > 310) ? 0.6 : 0.4;
+    const col = (x < 160 || x > 310) ? '#cc6600' : '#888';
+    s += `<line x1="${x}" y1="42" x2="${x}" y2="78" stroke="${col}" stroke-width="${sw}" />`;
+  }
+  for (let x = 425; x < 695; x += 12) {
+    const sw = (x < 490 || x > 630) ? 0.6 : 0.4;
+    const col = (x < 490 || x > 630) ? '#cc6600' : '#888';
+    s += `<line x1="${x}" y1="42" x2="${x}" y2="78" stroke="${col}" stroke-width="${sw}" />`;
+  }
+
+  // Section cuts lines A-A, B-B, C-C
+  const drawCut = (x: number, label: string) => {
+    return `<g stroke="#000" stroke-width="0.8">
+      <line x1="${x - 5}" y1="30" x2="${x + 5}" y2="30" />
+      <line x1="${x}" y1="30" x2="${x}" y2="90" stroke-dasharray="4,3" />
+      <line x1="${x - 5}" y1="90" x2="${x + 5}" y2="90" />
+      <path d="M ${x-5},30 L ${x-5},35 M ${x-5},90 L ${x-5},85" />
+      <text x="${x}" y="24" text-anchor="middle" font-size="7" font-weight="bold" fill="#000">${label}-${label}</text>
+    </g>`;
+  };
+  s += drawCut(130, 'A'); // Left Support (A-A)
+  s += drawCut(230, 'B'); // Mid Span (B-B)
+  s += drawCut(330, 'C'); // Left support right side (C-C) (let's say right support start)
+
+  // Label names
+  s += `<text x="80" y="115" text-anchor="middle" font-size="7" font-family="'Segoe UI', Arial, sans-serif" font-weight="bold" fill="#555">ركيزة طرفية Beam Col-End</text>`;
+  s += `<text x="400" y="115" text-anchor="middle" font-size="7" font-family="'Segoe UI', Arial, sans-serif" font-weight="bold" fill="#555">ركيزة وسطية Mid Support</text>`;
+  s += `<text x="720" y="115" text-anchor="middle" font-size="7" font-family="'Segoe UI', Arial, sans-serif" font-weight="bold" fill="#555">ركيزة طرفية Beam Col-End</text>`;
+  
+  s += `<text x="130" y="98" text-anchor="middle" font-size="5.5" font-family="'Segoe UI', Arial, sans-serif" fill="#b91c1c">موقع مقطع أ-أ (عند الركيزة / تكسيح علوي)</text>`;
+  s += `<text x="230" y="98" text-anchor="middle" font-size="5.5" font-family="'Segoe UI', Arial, sans-serif" fill="#15803d">موقع مقطع ب-ب (وسط البحر / عزم موجب)</text>`;
+  s += `<text x="330" y="98" text-anchor="middle" font-size="5.5" font-family="'Segoe UI', Arial, sans-serif" fill="#b91c1c">موقع مقطع ج-ج (عند الركيزة / تكسيح علوي)</text>`;
+
+  return s;
+}
+
 // ─── Main export function ───
 
 export function generateHTMLConstructionSheets(
@@ -1542,7 +1885,7 @@ export function generateHTMLConstructionSheets(
   const scaleText = `1:${scaleVal}`;
 
   // Build group label maps for plan SVG labels
-  const beamGroupLabels = buildBeamGroupLabels(beamDesigns);
+  const beamGroupLabels = buildBeamGroupLabels(beamDesigns, options?.bentUpResults);
   const colGroupLabels = buildColGroupLabels(colDesigns);
   const slabGroupLabels = buildSlabGroupLabels(slabDesigns);
 
@@ -1562,7 +1905,7 @@ export function generateHTMLConstructionSheets(
     'beam-layout',
     beamPlanSvg,
     planZoneW, svgH,
-    htmlScaleBarBlock(scaleVal) + htmlBeamScheduleTable(beams, beamDesigns),
+    htmlScaleBarBlock(scaleVal) + htmlBeamScheduleTable(beams, beamDesigns, options?.bentUpResults),
     {
       ...tbBase,
       drawingTitle: 'BEAM LAYOUT PLAN / مخطط الجسور',
@@ -1574,37 +1917,228 @@ export function generateHTMLConstructionSheets(
   );
 
   // ═══════════════════════════════════════════════════
-  // SHEET 2: COLUMN LAYOUT PLAN
+  // SHEET 2: BEAM DETAILED CROSS SECTIONS (Dynamic Pagination)
+  // ═══════════════════════════════════════════════════
+  const bGroupsForSec = new Map<string, { designs: BeamDesignData[]; memberIds: string[] }>();
+  for (const d of beamDesigns) {
+    const label = beamGroupLabels.get(d.beamId) ?? d.beamId;
+    if (!bGroupsForSec.has(label)) bGroupsForSec.set(label, { designs: [], memberIds: [] });
+    bGroupsForSec.get(label)!.designs.push(d);
+    const mergedIds = (d as any).mergedCarrierIds as string[] | undefined;
+    if (mergedIds && mergedIds.length > 0) {
+      bGroupsForSec.get(label)!.memberIds.push(...mergedIds);
+    } else {
+      bGroupsForSec.get(label)!.memberIds.push(d.beamId);
+    }
+  }
+
+  const bGroupEntries = Array.from(bGroupsForSec.entries()).sort((a, b) => a[0].localeCompare(b[0], 'ar'));
+  
+  // Set constraints: page 1 can fit 2 groups (due to typical elevation), subsequent can fit 3
+  const groupsPerPage = 2;
+  const groupsPerPageSubsequent = 3;
+
+  const bSectionPages: Array<typeof bGroupEntries> = [];
+  let currentGroupBatch: typeof bGroupEntries = [];
+  
+  for (let i = 0; i < bGroupEntries.length; i++) {
+    currentGroupBatch.push(bGroupEntries[i]);
+    const isFirstPage = bSectionPages.length === 0;
+    const limit = isFirstPage ? groupsPerPage : groupsPerPageSubsequent;
+    if (currentGroupBatch.length === limit || i === bGroupEntries.length - 1) {
+      bSectionPages.push(currentGroupBatch);
+      currentGroupBatch = [];
+    }
+  }
+
+  const beamSecSheetsCount = Math.max(1, bSectionPages.length);
+  let beamSecSheetIdx = 1;
+
+  for (const pageGroups of bSectionPages) {
+    const sectionDwg = makeDrawingNumber(floorCode, 'BS', 1 + beamSecSheetIdx);
+    let pageHtml = '';
+    
+    if (beamSecSheetIdx === 1) {
+      pageHtml += `
+      <div style="width: 100%; border: 1.5px solid #1a3a5c; border-radius: 6px; padding: 10px 15px; background: #fff; margin-bottom: 12px;">
+        <div style="font-weight: bold; font-size: 11px; color: #1a56db; margin-bottom: 8px; font-family: Arial, sans-serif; border-bottom: 2px dashed #eaeaea; padding-bottom: 4px; text-align: right;">TYPICAL CONTINUOUS BEAM REINFORCEMENT &amp; SECTION CUTS / التفاصيل النموذجية لتسليح الجسور ومواقع المقاطع العرضية</div>
+        <svg viewBox="0 0 800 135" width="100%" height="135" xmlns="http://www.w3.org/2000/svg" style="background:#fff;">
+          ${svgTypicalContinuousBeam()}
+        </svg>
+      </div>`;
+    } else {
+      pageHtml += `<div style="font-weight: bold; font-size: 11px; color: #1a3a5c; margin-bottom: 12px; font-family: Arial, sans-serif; border-bottom: 2px solid #1a3a5c; padding-bottom: 4px; text-align: right;">BEAM DETAILED CROSS SECTIONS (CONTINUED) / قطاعات تفصيلية للجسور (تابع)</div>`;
+    }
+
+    for (const [groupLabel, { designs, memberIds }] of pageGroups) {
+      const d = designs[0];
+      let b_dim = 300;
+      let h_dim = 500;
+      for (const design of designs) {
+        let beam = beams.find(b => b.id === design.beamId);
+        if (!beam && (design as any).mergedCarrierIds) {
+          const parts = ((design as any).mergedCarrierIds as string[])
+            .map(id => beams.find(b => b.id === id)).filter(Boolean) as Beam[];
+          if (parts.length > 0) {
+            const largest = parts.reduce((best, b) => b.b * b.h >= best.b * best.h ? b : best, parts[0]);
+            b_dim = largest.b; h_dim = largest.h;
+          }
+        } else if (beam) {
+          b_dim = beam.b; h_dim = beam.h;
+        }
+      }
+
+      let bent: any = null;
+      if (options?.bentUpResults) {
+        for (const id of memberIds) {
+          const canonId = getCanonicalBeamId(id);
+          for (const fr of options.bentUpResults) {
+            if (!fr) continue;
+            const bResult = fr.beams?.find((bb: any) => bb.beamId === id || bb.beamId === canonId);
+            if (bResult) {
+              bent = bResult;
+              break;
+            }
+          }
+          if (bent) break;
+        }
+      }
+
+      const totalBot = d.flexMid.bars;
+      const isShort = d.span <= 2.0;
+      const hasBent = !isShort && totalBot >= 3;
+      const bentCount = bent ? bent.bentUp.bentBarsCount : (hasBent ? Math.floor(totalBot / 2) : 0);
+      const straightBot = bent ? bent.bentUp.remainingBottomBars : (totalBot - bentCount);
+
+      const topDia = bent ? bent.topDia : Math.max(d.flexLeft.dia, d.flexRight.dia);
+      const netTop = bent ? bent.finalTopBars : Math.max(2, Math.max(d.flexLeft.bars, d.flexRight.bars) - bentCount);
+      const actualBotDia = bent ? bent.bottomDia : d.flexMid.dia;
+      const actualTopDia = bent ? bent.topDia : topDia;
+
+      const sm = d.shear.stirrups.match(/Φ(\d+)/);
+      const stirDMm = sm ? parseInt(sm[1]) : 10;
+
+      const uniqueIds = [...new Set(memberIds)].sort((a, b) => {
+        const na = parseFloat(a.replace(/[^0-9.]/g, ''));
+        const nb = parseFloat(b.replace(/[^0-9.]/g, ''));
+        return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
+      });
+
+      const canonToParts = new Map<string, string[]>();
+      for (const id of uniqueIds) {
+        const canon = getCanonicalBeamId(id);
+        if (!canonToParts.has(canon)) canonToParts.set(canon, []);
+        canonToParts.get(canon)!.push(id);
+      }
+
+      const uniqueNames: string[] = [];
+      for (const [canon, parts] of canonToParts.entries()) {
+        let nameToUse = '';
+        for (const pId of parts) {
+          const bObj = beams.find(x => x.id === pId);
+          if (bObj && bObj.name) {
+            nameToUse = bObj.name.replace(/-\d+$/, '');
+            break;
+          }
+        }
+        if (!nameToUse) {
+          const bObjFirst = beams.find(x => x.id === parts[0]);
+          if (bObjFirst && bObjFirst.name) {
+            nameToUse = bObjFirst.name.replace(/-\d+$/, '');
+          } else {
+            nameToUse = canon;
+          }
+        }
+        uniqueNames.push(nameToUse);
+      }
+
+      pageHtml += `
+      <div style="border: 1.5px solid #2a4a6c; border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; background: #fafafa; direction: rtl; font-family:'Segoe UI',Arial,Tahoma,sans-serif;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #2a4a6c; padding-bottom: 4px; margin-bottom: 8px;">
+          <div style="font-weight: bold; font-size: 10px; color: #1a3a5c;">مجموعة الجسور: <span style="background: #1a3a5c; color: #fff; padding: 1px 6px; border-radius: 4px; font-size: 9px; margin-right: 4px;">${groupLabel}</span></div>
+          <div style="font-size: 8px; color: #555; font-weight: 500;">أرقام الجسور في المسقط: <span style="color:#000; font-weight:bold;">${uniqueNames.join(', ')}</span></div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+          <div style="background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 0; display:flex; flex-direction:column; align-items:center;">
+            <svg viewBox="0 0 150 150" width="100%" height="115" xmlns="http://www.w3.org/2000/svg">
+              ${_svgCrossSection(0, 0, 150, 150, b_dim, h_dim, 40, stirDMm, netTop + bentCount, actualTopDia, straightBot, actualBotDia, 'SEC A-A (START / عند البداية)', bentCount, actualBotDia, true)}
+            </svg>
+            <div style="font-size: 7.5px; font-weight: bold; color: #8b0000; margin-top: 1px;">ركيزة البداية اليسرى (عزم سالب)</div>
+          </div>
+          <div style="background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 0; display:flex; flex-direction:column; align-items:center;">
+            <svg viewBox="0 0 150 150" width="100%" height="115" xmlns="http://www.w3.org/2000/svg">
+              ${_svgCrossSection(0, 0, 150, 150, b_dim, h_dim, 40, stirDMm, netTop, actualTopDia, totalBot, actualBotDia, 'SEC B-B (MID-SPAN / وسط البحر)', bentCount, actualBotDia, false)}
+            </svg>
+            <div style="font-size: 7.5px; font-weight: bold; color: #1a56db; margin-top: 1px;">منتصف البحر (عزم موجب رئيسي)</div>
+          </div>
+          <div style="background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 4px 0; display:flex; flex-direction:column; align-items:center;">
+            <svg viewBox="0 0 150 150" width="100%" height="115" xmlns="http://www.w3.org/2000/svg">
+              ${_svgCrossSection(0, 0, 150, 150, b_dim, h_dim, 40, stirDMm, netTop + bentCount, actualTopDia, straightBot, actualBotDia, 'SEC C-C (END / عند النهاية)', bentCount, actualBotDia, true)}
+            </svg>
+            <div style="font-size: 7.5px; font-weight: bold; color: #8b0000; margin-top: 1px;">ركيزة النهاية اليمنى (عزم سالب)</div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    const activeSheetNo = (1 + beamSecSheetIdx).toString();
+    sheetsHTML += `
+    <div class="sheet-page" style="position:relative; width:${_SHEET_W}px; height:${_SHEET_H}px; background:white; overflow:hidden; page-break-after:always; font-family:'Segoe UI',Arial,Tahoma,sans-serif; direction:rtl;">
+      ${htmlSheetBorder()}
+      <div style="position:absolute; top:45px; left:45px; right:45px; height:${svgH}px; overflow:hidden; padding:12px; background:#fff; border:1px solid #ccc;">
+        ${pageHtml}
+      </div>
+      ${htmlTitleBlock({
+        ...tbBase,
+        drawingTitle: `BEAM CROSS SECTIONS &amp; DETAILS ${bSectionPages.length > 1 ? `(${beamSecSheetIdx})` : ''} / قطاعات تفصيلية للجسور`,
+        drawingSubTitle: storyLabel || 'All Floors',
+        drawingNumber: sectionDwg,
+        sheetNo: activeSheetNo,
+        scale: '1:10 / 1:25',
+      })}
+    </div>`;
+
+    beamSecSheetIdx++;
+  }
+
+  // ═══════════════════════════════════════════════════
+  // SHEET 3 (COLUMN LAYOUT PLAN)
   // ═══════════════════════════════════════════════════
   const csDwg = makeDrawingNumber(floorCode, 'CS', 1);
   const colPlanSvg = gridSvg
     + svgColumns(columns, tx, ty, mmPerM, true, true, colGroupLabels);
 
-  // Column cross-sections SVG
-  const colPatternMap = new Map<string, ColDesignData[]>();
+  // Column cross-sections SVG grouped by Arabic group label (ع-1, ع-2)
+  const colGroups = new Map<string, ColDesignData[]>();
   for (const cd of colDesigns) {
-    const key = `${cd.b}_${cd.h}_${cd.design.bars}_${cd.design.dia}_${cd.design.stirrups}`;
-    if (!colPatternMap.has(key)) colPatternMap.set(key, []);
-    colPatternMap.get(key)!.push(cd);
+    const label = colGroupLabels.get(cd.id) ?? cd.id;
+    if (!colGroups.has(label)) colGroups.set(label, []);
+    colGroups.get(label)!.push(cd);
   }
 
   let colSectionsSvg = '';
-  const patternEntries = Array.from(colPatternMap.entries());
+  const groupEntries = Array.from(colGroups.entries()).sort((a, b) => a[0].localeCompare(b[0], 'ar'));
   const secW = 140;
   const secH = 150;
   const colsPerRow = 3;
   let secIdx = 0;
-  for (const [, group] of patternEntries) {
-    const rep = group[0];
+  for (const [label, groupCols] of groupEntries) {
+    const rep = groupCols[0];
+    const memberIds = groupCols.map(col => col.id).sort((a, b) => {
+      const na = parseFloat(a.replace(/[^0-9.]/g, ''));
+      const nb = parseFloat(b.replace(/[^0-9.]/g, ''));
+      return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
+    });
+
     const row = Math.floor(secIdx / colsPerRow);
     const col = secIdx % colsPerRow;
     const sx = col * secW;
     const sy = row * (secH + 15);
-    colSectionsSvg += svgColumnCrossSection(rep, sx, sy, secW, secH);
+    colSectionsSvg += svgColumnCrossSection(rep, sx, sy, secW, secH, label, memberIds);
     secIdx++;
   }
 
-  const colSecSvgH = Math.ceil(patternEntries.length / colsPerRow) * (secH + 15);
+  const colSecSvgH = Math.ceil(groupEntries.length / colsPerRow) * (secH + 15);
   const colTableAndSections = htmlScaleBarBlock(scaleVal)
     + htmlColumnScheduleTable(colDesigns)
     + `<div style="margin-top:12px;">
@@ -1624,13 +2158,13 @@ export function generateHTMLConstructionSheets(
       drawingTitle: 'COLUMN LAYOUT PLAN / مخطط الأعمدة',
       drawingSubTitle: storyLabel || 'All Floors',
       drawingNumber: csDwg,
-      sheetNo: '2',
+      sheetNo: (2 + beamSecSheetsCount).toString(),
       scale: scaleText,
     },
   );
 
   // ═══════════════════════════════════════════════════
-  // SHEET 3: SLAB REINFORCEMENT PLAN (Strip Method)
+  // SHEET 4 (SLAB REINFORCEMENT PLAN)
   // ═══════════════════════════════════════════════════
   const slDwg = makeDrawingNumber(floorCode, 'SL', 1);
 
@@ -1648,17 +2182,11 @@ export function generateHTMLConstructionSheets(
     + svgSlabsOnPlan(
         slabs, slabDesigns, tx, ty, mmPerM,
         slabGroupLabels,
-        stripResults.length > 0 ? stripResults : undefined,
-        slabProps?.phiSlab,
       )
-    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM)
+    + svgBeamsOnPlan(beams, columns, tx, ty, mmPerM, undefined, true)
     + svgColumns(columns, tx, ty, mmPerM, true, false);
 
-  const slabTableHTML = htmlScaleBarBlock(scaleVal) + (
-    (slabProps && mat && stripResults.length > 0)
-      ? htmlSlabStripTable(stripResults, slabProps, mat)
-      : htmlSlabScheduleTable(slabDesigns, slabs)
-  );
+  const slabTableHTML = htmlScaleBarBlock(scaleVal) + htmlSlabScheduleTable(slabDesigns, slabs);
 
   sheetsHTML += generateSheetHTML(
     'slab-plan',
@@ -1670,13 +2198,13 @@ export function generateHTMLConstructionSheets(
       drawingTitle: 'SLAB REINFORCEMENT PLAN / مخطط تسليح البلاطات (طريقة الشرائح)',
       drawingSubTitle: storyLabel || 'All Floors',
       drawingNumber: slDwg,
-      sheetNo: '3',
+      sheetNo: (3 + beamSecSheetsCount).toString(),
       scale: scaleText,
     },
   );
 
   // ═══════════════════════════════════════════════════
-  // SHEET 4: GENERAL NOTES
+  // SHEET 5 (GENERAL NOTES)
   // ═══════════════════════════════════════════════════
   const ntDwg = makeDrawingNumber(floorCode, 'NT', 1);
   const devLengths = options?.devLengths || [];
@@ -1761,7 +2289,7 @@ export function generateHTMLConstructionSheets(
       drawingTitle: 'GENERAL NOTES / ملاحظات عامة',
       drawingSubTitle: storyLabel || 'All Floors',
       drawingNumber: ntDwg,
-      sheetNo: '4',
+      sheetNo: (4 + beamSecSheetsCount).toString(),
       scale: 'N.T.S.',
     })}
   </div>`;
@@ -1769,10 +2297,10 @@ export function generateHTMLConstructionSheets(
   sheetsHTML += generalNotesHTML;
 
   // ═══════════════════════════════════════════════════
-  // SHEET 5+: BBS (Bar Bending Schedule)
+  // SHEET 6+: BBS (Bar Bending Schedule)
   // ═══════════════════════════════════════════════════
   if (beamDesigns.length > 0 || colDesigns.length > 0) {
-    const bbsSheetNo = 5;
+    const bbsSheetNo = 5 + beamSecSheetsCount;
     sheetsHTML += htmlBBSSheet(beams, beamDesigns, colDesigns, slabDesigns, { ...tbBase, drawingSubTitle: storyLabel || 'All Floors' }, floorCode, bbsSheetNo);
   }
 

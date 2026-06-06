@@ -519,7 +519,7 @@ export function generateColumns(slabs: Slab[]): Column[] {
   }
   const pts = [...map.values()].sort((a, b) => a.x - b.x || a.y - b.y);
   return pts.map((p, i) => ({
-    id: `C${i + 1}`, x: p.x, y: p.y, b: 300, h: 400, L: 4000,
+    id: `C${i + 1}`, x: p.x, y: p.y, b: 300, h: 400, L: 3000,
   }));
 }
 
@@ -2372,7 +2372,7 @@ export function designColumnETABS(
 export function designColumnBasic(
   Pu: number, b: number, h: number, fc: number, fy: number, Lu?: number
 ): ColumnResult {
-  return designColumnETABS(Pu, 0, b, h, fc, fy, Lu || 4000);
+  return designColumnETABS(Pu, 0, b, h, fc, fy, Lu || 3000);
 }
 
 // ===================== PUNCHING SHEAR =====================
@@ -2604,6 +2604,27 @@ function getOneWaySlabMoments(
   }
 }
 
+function findAdjacentSlabs(slab: Slab, allSlabs: Slab[]): Slab[] {
+  const list: Slab[] = [];
+  for (const other of allSlabs) {
+    if (other.id === slab.id) continue;
+    if (other.storyId !== slab.storyId) continue;
+
+    // Check vertical shared edge (slab is left, other is right or vice versa)
+    const shareX = Math.abs(slab.x2 - other.x1) < 0.05 || Math.abs(slab.x1 - other.x2) < 0.05;
+    const overlapY = Math.max(slab.y1, other.y1) < Math.min(slab.y2, other.y2) - 0.05;
+
+    // Check horizontal shared edge (slab is bottom, other is top or vice versa)
+    const shareY = Math.abs(slab.y2 - other.y1) < 0.05 || Math.abs(slab.y1 - other.y2) < 0.05;
+    const overlapX = Math.max(slab.x1, other.x1) < Math.min(slab.x2, other.x2) - 0.05;
+
+    if ((shareX && overlapY) || (shareY && overlapX)) {
+      list.push(other);
+    }
+  }
+  return list;
+}
+
 export function designSlab(
   slab: Slab, props: SlabProps, mat: MatProps, allSlabs: Slab[],
   columns?: Column[]
@@ -2620,7 +2641,7 @@ export function designSlab(
   const ownWeight = (hUsed / 1000) * mat.gamma;
   const Wu = 1.2 * (ownWeight + props.finishLoad) + 1.6 * props.liveLoad;
 
-  const d = hUsed - props.cover - props.phiSlab / 2;
+  const d = hUsed - props.cover - Math.max(10, props.phiSlab) / 2;
 
   // ACI 318-19 §7.6.1.1 (one-way) and §8.6.1.1 (two-way) — minimum reinforcement for slabs
   // For fy ≥ 420 MPa: As,min = 0.0018 * b * h
@@ -2666,6 +2687,52 @@ export function designSlab(
     longAs = Math.max(rhoLong * 1000 * d, AsMinPerM);
   }
 
+  // Support negative moment check for adjacent continuous slabs per user request:
+  const adjacentSlabs = findAdjacentSlabs(slab, allSlabs);
+  if (adjacentSlabs.length > 0) {
+    for (const other of adjacentSlabs) {
+      const lxOther = Math.min(Math.abs(other.x2 - other.x1), Math.abs(other.y2 - other.y1));
+      const lyOther = Math.max(Math.abs(other.x2 - other.x1), Math.abs(other.y2 - other.y1));
+      const hMinOther = getMinSlabThickness(lxOther, lyOther, lyOther / lxOther, lyOther / lxOther > 2, countDiscontinuousEdges(other, allSlabs));
+      const hUsedOther = Math.max(Math.ceil(hMinOther / 10) * 10, props.thickness);
+      const ownWeightOther = (hUsedOther / 1000) * mat.gamma;
+      const WuOther = 1.2 * (ownWeightOther + props.finishLoad) + 1.6 * props.liveLoad;
+
+      const lAvg = (lx + lxOther) / 2;
+      const WuAvg = (Wu + WuOther) / 2;
+
+      // ACI 318 moment coefficient at continuous support: Mu,neg = Wu * ln^2 / 10
+      const MuNeg = (WuAvg * lAvg * lAvg) / 10;
+      const MuNeg_Nmm = MuNeg * 1e6;
+      const RuNeg = MuNeg_Nmm / (1000 * d * d);
+      let rhoNeg = 0.85 * mat.fc / mat.fy * (1 - Math.sqrt(1 - 2 * RuNeg / (0.9 * 0.85 * mat.fc)));
+      if (isNaN(rhoNeg) || rhoNeg < 0) rhoNeg = 0;
+      const AsNeg = Math.max(rhoNeg * 1000 * d, AsMinPerM);
+
+      // Determine continuity direction: X or Y boundary
+      const shareX = Math.abs(slab.x2 - other.x1) < 0.05 || Math.abs(slab.x1 - other.x2) < 0.05; // Vertical edge
+      const shareY = Math.abs(slab.y2 - other.y1) < 0.05 || Math.abs(slab.y1 - other.y2) < 0.05; // Horizontal edge
+
+      if (shareX) {
+        // Continuous boundary vertical (bars crossing represent X direction)
+        const isXShort = Math.abs(slab.x2 - slab.x1) <= Math.abs(slab.y2 - slab.y1);
+        if (isXShort) {
+          if (AsNeg > shortAs) shortAs = AsNeg;
+        } else {
+          if (AsNeg > longAs) longAs = AsNeg;
+        }
+      } else if (shareY) {
+        // Continuous boundary horizontal (bars crossing represent Y direction)
+        const isXShort = Math.abs(slab.x2 - slab.x1) <= Math.abs(slab.y2 - slab.y1);
+        if (isXShort) {
+          if (AsNeg > longAs) longAs = AsNeg;
+        } else {
+          if (AsNeg > shortAs) shortAs = AsNeg;
+        }
+      }
+    }
+  }
+
   // ACI 318-19 §7.7.2.3 (one-way) and §8.7.2.2 (two-way) — maximum bar spacing
   // s_max = min(2h, 450 mm) for primary reinforcement
   // s_max = min(5h, 450 mm) for shrinkage/temperature
@@ -2673,16 +2740,18 @@ export function designSlab(
   const maxSpacingTemp = Math.min(5 * hUsed, 450);
 
   const selectBars = (As: number, isPrimary: boolean): { bars: number; dia: number; spacing: number } => {
-    const slabDiameters = [8, 10]; // Min 8mm, max 10mm for slabs per project spec
+    const slabDiameters = [10, 12, 14]; // Min 10mm per user request
     const maxSpacing = isPrimary ? maxSpacingPrimary : maxSpacingTemp;
-    let bestDia = props.phiSlab;
-    let bestBars = 3;
+    let bestDia = Math.max(10, props.phiSlab || 10);
+    let bestBars = 5;
     let bestSpacing = 200;
     let bestScore = Infinity;
 
     for (const dia of slabDiameters) {
       const aBar = Math.PI * dia * dia / 4;
-      const nBarsFromAs = Math.max(Math.ceil(As / aBar), 3);
+      // Compare the three values of reinforcement area: Required, ACI Minimum, and 5 Bars per meter
+      const targetAs = Math.max(As, AsMinPerM, 5 * aBar);
+      const nBarsFromAs = Math.max(Math.ceil(targetAs / aBar), 5);
       const spacingFromAs = Math.floor(1000 / nBarsFromAs);
 
       // Also check max spacing requirement
@@ -2692,7 +2761,7 @@ export function designSlab(
 
       if (spacing < 75) continue; // too dense, try larger diameter
       const actualAs = nBars * aBar;
-      const waste = (actualAs - As) / Math.max(As, 1);
+      const waste = (actualAs - targetAs) / Math.max(targetAs, 1);
       if (waste < bestScore) {
         bestScore = waste;
         bestDia = dia;
@@ -3654,11 +3723,11 @@ export function calculateBentUpBars(
 ): BentUpBarResult {
   // Skip bent-up bars for short beams (span ≤ 2 m): not effective and not constructible.
   const isShortSpan = span <= 2.0;
-  // ACI §9.7.3.8.2: at least 1/3 of positive moment steel must remain straight to support
-  const minStraight = Math.ceil(bottomBars / 3);
-  // Bend every other bar - alternate bars
-  const maxBentBars = bottomBars - minStraight;
-  const bentBarsCount = isShortSpan ? 0 : Math.max(0, Math.floor(maxBentBars));
+  
+  // Logic per user requirements:
+  // "في الحديد السفلي اذا كان عدد الاسياخ زوجي يتم تقسيمه الى نصفين نصفه حديد مستقيم والنصف الاخر مكسح اما اذا كان فردي فالاكثر هو الحديد المستقيم"
+  const bentBarsCount = isShortSpan ? 0 : Math.floor(bottomBars / 2);
+  const remainingBottomBars = bottomBars - bentBarsCount;
 
   const aBar = Math.PI * bottomDia * bottomDia / 4;
   const bentBarsArea = bentBarsCount * aBar;
@@ -3673,7 +3742,7 @@ export function calculateBentUpBars(
   return {
     bentBarsCount,
     bentBarsArea,
-    remainingBottomBars: bottomBars - bentBarsCount,
+    remainingBottomBars,
     bendPointLeft,
     bendPointRight,
     shearContribution,
@@ -3706,7 +3775,7 @@ export function calculateFrameBentUp(
   const frameBeams = frame.beamIds.map(id => beamsMap.get(id)!);
   const n = frameBeams.length;
 
-  // First: design each beam's flexure to get bar counts
+  // First: design each beam's flexure to get required steel areas (As)
   const beamFlexures = frameResult.beams.map(br => {
     const beam = beamsMap.get(br.beamId)!;
     const flexLeft = designFlexure(Math.abs(br.Mleft), beam.b, beam.h, mat.fc, mat.fy);
@@ -3715,77 +3784,224 @@ export function calculateFrameBentUp(
     return { br, beam, flexLeft, flexMid, flexRight };
   });
 
-  // Determine exterior/interior for each beam position
-  const isExteriorLeft = (i: number) => i === 0;
-  const isExteriorRight = (i: number) => i === n - 1;
+  // Candidate diameters
+  const candidates = [10, 12, 14, 16, 18, 20, 22, 25];
 
-  // Calculate bent-up bars for each beam
-  // Secondary (carried) beams: bars run straight — no bent-up bars (تكسيح)
-  // Reason: carried beam ends at a hinge (beam-on-beam connection), so bars cannot be bent
-  // over the support and provide continuity. Bottom bars remain straight through the full span.
-  const bentResults = beamFlexures.map((bf, i) => {
-    const isSecondary = secondaryBeamIds?.has(bf.br.beamId) ?? false;
-    if (isSecondary) {
-      // Return zero bent-up result for secondary beams
+  // Helper spacing check
+  const checkSpacing = (b: number, n_bars: number, db: number, cover = 40, stirrupD = 8) => {
+    if (n_bars <= 1) return { ok: true, spacing: 999 };
+    const b_avail = b - 2 * (cover + stirrupD);
+    const clear_space = (b_avail - n_bars * db) / (n_bars - 1);
+    const min_allowed = Math.max(25, db);
+    return {
+      ok: clear_space >= min_allowed,
+      spacing: clear_space
+    };
+  };
+
+  const checkBottomSpacingWithTwoLayers = (b: number, n_bars: number, db: number, cover = 40, stirrupD = 8) => {
+    if (n_bars <= 1) return { ok: true, spacing: 999, isTwoLayers: false };
+    const b_avail = b - 2 * (cover + stirrupD);
+    const min_spacing = Math.max(25, db);
+    const maxInLayer = Math.max(2, Math.floor((b_avail + min_spacing) / (db + min_spacing)));
+
+    if (n_bars <= maxInLayer) {
+      const res = checkSpacing(b, n_bars, db, cover, stirrupD);
+      return { ok: res.ok, spacing: res.spacing, isTwoLayers: false };
+    } else {
+      // Divide into two layers
+      const n2 = n_bars - maxInLayer;
+      const n1 = maxInLayer;
+      const r1 = checkSpacing(b, n1, db, cover, stirrupD);
+      const r2 = checkSpacing(b, n2, db, cover, stirrupD);
       return {
-        bentBarsCount: 0,
-        bentBarsArea: 0,
-        remainingBottomBars: bf.flexMid.bars,
-        bendPointLeft: 0,
-        bendPointRight: 0,
-        shearContribution: 0,
-        bentDia: bf.flexMid.dia,
-        isExteriorLeft: isExteriorLeft(i),
-        isExteriorRight: isExteriorRight(i),
-      } as BentUpBarResult;
+        ok: r1.ok && r2.ok,
+        spacing: Math.min(r1.spacing, r2.spacing),
+        isTwoLayers: true
+      };
     }
-    return calculateBentUpBars(
-      bf.flexMid.bars, bf.flexMid.dia,
-      bf.br.span, isExteriorLeft(i), isExteriorRight(i),
-      mat.fy
-    );
-  });
+  };
 
-  // Now calculate contributions at each support
-  // Support j is between beam j-1 and beam j (for j=0 it's left end, j=n is right end)
+  // Evaluate candidate diameter pairs
+  const evaluatePair = (botDia: number, topDia: number) => {
+    const aBarBot = (Math.PI * botDia * botDia) / 4;
+    const aBarTop = (Math.PI * topDia * topDia) / 4;
+
+    const tempBents = beamFlexures.map((bf) => {
+      const isSecondary = secondaryBeamIds?.has(bf.br.beamId) ?? false;
+      const isShortSpan = bf.br.span <= 2.0;
+
+      // Bottom bars needed
+      const bottomBars = Math.max(2, Math.ceil(bf.flexMid.As / aBarBot));
+      
+      // As per user rule: we cannot have less than 2 straight bottom bars, and we can allow bent bars down to 1.
+      // So the minimum total bottom bars to have any bent bars is 3.
+      const canBent = bottomBars >= 3 && !isSecondary && !isShortSpan;
+      const bentBarsCount = canBent ? Math.floor(bottomBars / 2) : 0;
+      const remainingBottomBars = bottomBars - bentBarsCount;
+      const bentBarsArea = bentBarsCount * aBarBot;
+
+      return {
+        bottomBars,
+        bentBarsCount,
+        remainingBottomBars,
+        bentBarsArea,
+      };
+    });
+
+    let violations = 0;
+    let deficit = 0;
+    let sizePenalty = 0;
+
+    for (let i = 0; i < n; i++) {
+      const bf = beamFlexures[i];
+      const beam = bf.beam;
+      const bent = tempBents[i];
+
+      // Check bottom spacing (with two layer support!)
+      const botSpacing = checkBottomSpacingWithTwoLayers(beam.b, bent.bottomBars, botDia);
+      if (!botSpacing.ok) {
+        violations += 10;
+        deficit += (Math.max(25, botDia) - botSpacing.spacing);
+      }
+
+      // User rule: if bottomBars is 3 or less, search for a smaller diameter (down to 10mm)
+      // to find if we can get at least 4 bars
+      if (bent.bottomBars < 4 && botDia > 10) {
+        // Find if any smaller candidate would give >= 4 bars
+        for (const db of candidates) {
+          if (db < botDia) {
+            const ab = (Math.PI * db * db) / 4;
+            const count = Math.ceil(bf.flexMid.As / ab);
+            if (count >= 4) {
+              sizePenalty += 50 * (botDia - db); // Prefer smaller diameter that yields >= 4 bars
+              break;
+            }
+          }
+        }
+      }
+
+      // Left support
+      const requiredTopLeftAs = bf.flexLeft.As;
+      const bentFromThisLeft = bent.bentBarsArea;
+      const bentFromPrevRight = i > 0 ? tempBents[i - 1].bentBarsArea : 0;
+      const bentContributionLeftAs = bentFromThisLeft + bentFromPrevRight;
+      
+      const netTopLeftAs = Math.max(0, requiredTopLeftAs - bentContributionLeftAs);
+      const topLeftBars = Math.max(2, Math.ceil(netTopLeftAs / aBarTop));
+      const leftSpacing = checkSpacing(beam.b, topLeftBars, topDia);
+      if (!leftSpacing.ok) {
+        violations++;
+        deficit += (Math.max(25, topDia) - leftSpacing.spacing);
+      }
+
+      // Right support
+      const requiredTopRightAs = bf.flexRight.As;
+      const bentFromThisRight = bent.bentBarsArea;
+      const bentFromNextLeft = i < n - 1 ? tempBents[i + 1].bentBarsArea : 0;
+      const bentContributionRightAs = bentFromThisRight + bentFromNextLeft;
+
+      const netTopRightAs = Math.max(0, requiredTopRightAs - bentContributionRightAs);
+      const topRightBars = Math.max(2, Math.ceil(netTopRightAs / aBarTop));
+      const rightSpacing = checkSpacing(beam.b, topRightBars, topDia);
+      if (!rightSpacing.ok) {
+        violations++;
+        deficit += (Math.max(25, topDia) - rightSpacing.spacing);
+      }
+    }
+
+    return { violations, deficit, sizePenalty, tempBents };
+  };
+
+  let bestBot = 12;
+  let bestTop = 12;
+  let bestResultData: ReturnType<typeof evaluatePair> | null = null;
+  let bestScore = Infinity;
+
+  for (const botDia of candidates) {
+    for (const topDia of candidates) {
+      const res = evaluatePair(botDia, topDia);
+      
+      // Calculate score based on multiple criteria:
+      // 1. Spacing violations are heavily penalized (res.violations)
+      // 2. Failure to use smaller diameters to get >= 4 bottom bars is penalized (res.sizePenalty)
+      // 3. Spacing deficit is penalized (res.deficit)
+      // 4. Sum of diameters to keep them as small as possible
+      // 5. Absolute difference in diameters to favor unified diameters (e.g. 12-12 over 12-10)
+      const score = res.violations * 1000000 + 
+                    res.sizePenalty * 10000 +
+                    res.deficit * 100 + 
+                    (botDia + topDia) * 10 + 
+                    Math.abs(botDia - topDia) * 2;
+
+      if (score < bestScore) {
+        bestScore = score;
+        bestBot = botDia;
+        bestTop = topDia;
+        bestResultData = res;
+      }
+    }
+  }
+
+  // Fallback if none found
+  if (!bestResultData) {
+    bestResultData = evaluatePair(12, 12);
+    bestBot = 12;
+    bestTop = 12;
+  }
+
   const result: FrameBentUpResult = { frameId: frame.id, beams: [] };
+  const aBarBot = (Math.PI * bestBot * bestBot) / 4;
+  const aBarTop = (Math.PI * bestTop * bestTop) / 4;
 
   for (let i = 0; i < n; i++) {
     const bf = beamFlexures[i];
-    const bent = bentResults[i];
-    const topDia = bf.flexLeft.dia; // top bar diameter
+    const beam = bf.beam;
 
-    // Required top bars at left and right supports (from negative moment)
+    // Use optimized parameters
+    const bottomBars = bestResultData.tempBents[i].bottomBars;
+    const bentBarsCount = bestResultData.tempBents[i].bentBarsCount;
+    const remainingBottomBars = bestResultData.tempBents[i].remainingBottomBars;
+    const bentBarsArea = bentBarsCount * aBarBot;
+
+    const bendPointLeft = (i === 0) ? 0.15 * bf.br.span : 0.25 * bf.br.span;
+    const bendPointRight = (i === n - 1) ? 0.15 * bf.br.span : 0.25 * bf.br.span;
+    const shearContribution = bentBarsArea * mat.fy * Math.sin(Math.PI / 4) / 1000;
+
+    const bent: BentUpBarResult = {
+      bentBarsCount,
+      bentBarsArea,
+      remainingBottomBars,
+      bendPointLeft,
+      bendPointRight,
+      shearContribution,
+      bentDia: bestBot,
+      isExteriorLeft: i === 0,
+      isExteriorRight: i === n - 1,
+    };
+
+    // Calculate negative contribution and top bars
     const requiredTopLeftAs = bf.flexLeft.As;
-    const requiredTopRightAs = bf.flexRight.As;
-
-    // Bent contribution at LEFT support of beam i:
-    // - Bent bars from this beam (going up at left)
-    // - Bent bars from beam i-1 (going up at right, passing over this support)
-    const bentFromThisLeft = bent.bentBarsArea;
-    const bentFromPrevRight = i > 0 ? bentResults[i - 1].bentBarsArea : 0;
+    const bentFromThisLeft = bentBarsArea;
+    const bentFromPrevRight = i > 0 ? (bestResultData.tempBents[i - 1].bentBarsArea) : 0;
     const bentContributionLeftAs = bentFromThisLeft + bentFromPrevRight;
 
-    // Bent contribution at RIGHT support of beam i:
-    // - Bent bars from this beam (going up at right)
-    // - Bent bars from beam i+1 (going up at left, passing over this support)
-    const bentFromThisRight = bent.bentBarsArea;
-    const bentFromNextLeft = i < n - 1 ? bentResults[i + 1].bentBarsArea : 0;
+    const requiredTopRightAs = bf.flexRight.As;
+    const bentFromThisRight = bentBarsArea;
+    const bentFromNextLeft = i < n - 1 ? (bestResultData.tempBents[i + 1].bentBarsArea) : 0;
     const bentContributionRightAs = bentFromThisRight + bentFromNextLeft;
 
-    // Convert to bar counts using top bar diameter (count-based comparison for consistency)
-    const aBarTop = Math.PI * topDia * topDia / 4;
+    const netTopLeftAs = Math.max(0, requiredTopLeftAs - bentContributionLeftAs);
     const requiredTopLeftBars = Math.ceil(requiredTopLeftAs / aBarTop);
-    const requiredTopRightBars = Math.ceil(requiredTopRightAs / aBarTop);
     const bentContributionLeftBars = Math.floor(bentContributionLeftAs / aBarTop);
+    const additionalTopLeft = Math.ceil(netTopLeftAs / aBarTop);
+
+    const netTopRightAs = Math.max(0, requiredTopRightAs - bentContributionRightAs);
+    const requiredTopRightBars = Math.ceil(requiredTopRightAs / aBarTop);
     const bentContributionRightBars = Math.floor(bentContributionRightAs / aBarTop);
+    const additionalTopRight = Math.ceil(netTopRightAs / aBarTop);
 
-    // Additional top bars needed (count-based, consistent comparison)
-    const additionalTopLeft = Math.max(0, requiredTopLeftBars - bentContributionLeftBars);
-    const additionalTopRight = Math.max(0, requiredTopRightBars - bentContributionRightBars);
-
-    // Final top bars = max of what's needed at left and right
-    const finalTopBars = Math.max(additionalTopLeft, additionalTopRight, 2); // minimum 2 top bars
+    const finalTopBars = Math.max(additionalTopLeft, additionalTopRight, 2);
 
     result.beams.push({
       beamId: bf.br.beamId,
@@ -3797,9 +4013,9 @@ export function calculateFrameBentUp(
       additionalTopLeft,
       additionalTopRight,
       finalTopBars,
-      topDia,
-      originalBottomBars: bf.flexMid.bars,
-      bottomDia: bf.flexMid.dia,
+      topDia: bestTop,
+      originalBottomBars: bottomBars,
+      bottomDia: bestBot,
     });
   }
 
